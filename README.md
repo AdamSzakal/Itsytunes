@@ -2,7 +2,7 @@
 
 A small macOS music player for a local folder. It tags songs and fetches album art automatically, and can save audio from YouTube.
 
-Work in progress.
+Work in progress. Try it: download `TinyPlayer.zip` from [Releases](https://github.com/AdamSzakal/TinyPlayer/releases).
 
 ## Build
 
