@@ -5,11 +5,13 @@
 #   SIGN_IDENTITY="My Cert" ./scripts/build-app.sh
 set -e
 cd "$(dirname "$0")/.."
-swift build -c release
+VERSION="${VERSION:-0.1.0}"
+# Universal binary, so it runs on Apple Silicon and Intel Macs.
+swift build -c release --arch arm64 --arch x86_64
 APP=build/TinyPlayer.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
-cp .build/release/TinyPlayer "$APP/Contents/MacOS/"
+cp .build/apple/Products/Release/TinyPlayer "$APP/Contents/MacOS/"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -19,7 +21,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>local.tinyplayer</string>
     <key>CFBundleExecutable</key><string>TinyPlayer</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.music</string>
     <key>NSHighResolutionCapable</key><true/>
@@ -27,4 +29,5 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 codesign --force --sign "${SIGN_IDENTITY:--}" "$APP"
-echo "Built $APP"
+ditto -c -k --keepParent "$APP" build/TinyPlayer.zip
+echo "Built $APP and build/TinyPlayer.zip"
