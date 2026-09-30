@@ -109,9 +109,31 @@ for base in [16, 32, 128, 256, 512] {
     try render(size: base * 2).write(to: iconset.appendingPathComponent("icon_\(base)x\(base)@2x.png"))
 }
 try render(size: 1024).write(to: root.appendingPathComponent("Resources/AppIcon.png"))
-let iconutil = Process()
-iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-iconutil.arguments = ["-c", "icns", iconset.path, "-o", root.appendingPathComponent("Resources/AppIcon.icns").path]
-try iconutil.run()
-iconutil.waitUntilExit()
+
+// Smooth gradients with alpha compress badly as PNG; 256 colors with dithering look the same and are
+// about 70% smaller. Optional: `brew install pngquant`.
+if let pngquant = ["/opt/homebrew/bin/pngquant", "/usr/local/bin/pngquant"].first(where: FileManager.default.isExecutableFile) {
+    let files = try FileManager.default.contentsOfDirectory(atPath: iconset.path).map { iconset.appendingPathComponent($0).path }
+    let quantize = Process()
+    quantize.executableURL = URL(fileURLWithPath: pngquant)
+    quantize.arguments = ["--quality", "85-100", "--speed", "1", "--strip", "--force", "--ext", ".png"]
+        + files + [root.appendingPathComponent("Resources/AppIcon.png").path]
+    try quantize.run()
+    quantize.waitUntilExit()
+}
+
+// Write the .icns directly: iconutil re-encodes the PNGs and would undo the size saving above.
+// Format: "icns" + total length, then per image a 4-letter type + length (both include the 8-byte header).
+let types: [(type: String, file: String)] = [
+    ("icp4", "icon_16x16"), ("ic11", "icon_16x16@2x"), ("icp5", "icon_32x32"), ("ic12", "icon_32x32@2x"),
+    ("ic07", "icon_128x128"), ("ic13", "icon_128x128@2x"), ("ic08", "icon_256x256"), ("ic14", "icon_256x256@2x"),
+    ("ic09", "icon_512x512"), ("ic10", "icon_512x512@2x"),
+]
+func bigEndian(_ n: Int) -> Data { withUnsafeBytes(of: UInt32(n).bigEndian) { Data($0) } }
+var images = Data()
+for entry in types {
+    let png = try Data(contentsOf: iconset.appendingPathComponent(entry.file + ".png"))
+    images += Data(entry.type.utf8) + bigEndian(png.count + 8) + png
+}
+try (Data("icns".utf8) + bigEndian(images.count + 8) + images).write(to: root.appendingPathComponent("Resources/AppIcon.icns"))
 print("Wrote Resources/AppIcon.icns and Resources/AppIcon.png")

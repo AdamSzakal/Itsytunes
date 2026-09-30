@@ -8,7 +8,7 @@ import Observation
 final class Library {
     private(set) var folder: URL?
     private(set) var songs: [Song] = [] {
-        didSet { refreshNoisyTitles() }
+        didSet { refreshNoisyTitles() }  // also runs inside init: Observation turns this into a computed property
     }
     /// Set while confirmed tag changes are written, for the toolbar button's spinner.
     private(set) var tagWrite: (verb: String, done: Int, total: Int)?
@@ -17,6 +17,7 @@ final class Library {
     /// Clean-up check result per song state ("path|title|artist|album|track"). The check runs several
     /// patterns over each title; without this, every library change re-checked every song on the main thread.
     @ObservationIgnored private var noisyCache: [String: Bool] = [:]
+    @ObservationIgnored private var noisyTask: Task<Void, Never>?
     /// "path|title" of titles the user reviewed and left unchanged.
     @ObservationIgnored private var keptTitles = Set(UserDefaults.standard.stringArray(forKey: "keptTitles") ?? [])
     private(set) var scanStatus: String?
@@ -48,7 +49,6 @@ final class Library {
             try? FileManager.default.removeItem(at: ArtworkStore.dir)
         }
         songs = (try? JSONDecoder().decode([Song].self, from: Data(contentsOf: Self.cacheFile))) ?? []
-        refreshNoisyTitles() // didSet does not run inside init
         if let path = UserDefaults.standard.string(forKey: "folder") {
             open(URL(fileURLWithPath: path, isDirectory: true))
         }
@@ -184,18 +184,35 @@ final class Library {
         refreshNoisyTitles()
     }
 
+    /// Updates `noisyTitles` in the background, once per burst of changes (a scan changes `songs` many
+    /// times), so launching and scanning never wait for it. Only songs not seen before are checked.
     private func refreshNoisyTitles() {
-        noisyTitles = songs.filter { song in
-            guard !keptTitles.contains(Self.keptKey(song)) else { return false }
-            let key = "\(song.path)|\(song.displayTitle)|\(song.artist)|\(song.album)|\(song.track ?? 0)"
-            if let noisy = noisyCache[key] { return noisy }
-            let noisy = TagFixer.cleanupProposal(for: song) != nil
-            noisyCache[key] = noisy
-            return noisy
+        noisyTask?.cancel()
+        let songs = songs, kept = keptTitles, cache = noisyCache
+        noisyTask = Task {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            let result = await Task.detached(priority: .utility) { Self.noisy(songs, kept: kept, cache: cache) }.value
+            guard !Task.isCancelled else { return }
+            noisyCache = result.cache
+            noisyTitles = result.noisy
         }
     }
 
-    private static func keptKey(_ song: Song) -> String { "\(song.path)|\(song.displayTitle)" }
+    private nonisolated static func noisy(_ songs: [Song], kept: Set<String>, cache: [String: Bool]) -> (noisy: [Song], cache: [String: Bool]) {
+        var cache = cache
+        let noisy = songs.filter { song in
+            guard !kept.contains(keptKey(song)) else { return false }
+            let key = "\(song.path)|\(song.displayTitle)|\(song.artist)|\(song.album)|\(song.track ?? 0)"
+            if let noisy = cache[key] { return noisy }
+            let noisy = TagFixer.cleanupProposal(for: song) != nil
+            cache[key] = noisy
+            return noisy
+        }
+        return (noisy, cache)
+    }
+
+    private nonisolated static func keptKey(_ song: Song) -> String { "\(song.path)|\(song.displayTitle)" }
 
     func update(_ song: Song) {
         guard let i = songs.firstIndex(where: { $0.path == song.path }) else { return }

@@ -184,8 +184,10 @@ actor OnlineLookup {
     }
 
     /// "Teardrop (Remastered)" -> "teardrop", "Sigur Rós" -> "sigurros"
+    private static let bracketed = Pattern(#"\s*[\(\[][^\)\]]*[\)\]]"#)
+
     nonisolated static func normalize(_ s: String) -> String {
-        s.replacing(#/\s*[\(\[][^\)\]]*[\)\]]/#, with: "")
+        bracketed.replacing(in: s)
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
             .filter { $0.isLetter || $0.isNumber }
     }

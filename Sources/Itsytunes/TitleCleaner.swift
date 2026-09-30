@@ -4,6 +4,13 @@ import Foundation
 /// "100th electric cleaners mix | house | EC100 - 002 DR. GABBA - Rave Boi [eAWTeXE2SiQ]" -> "Rave Boi"
 /// (with artist DR. GABBA), or "Hip Hop 1996 X Instrumental-y0LDKI6VERU" -> "Hip Hop 1996 X Instrumental".
 enum TitleCleaner {
+    private static let pipe = Pattern(#"\s+[|｜]\s+"#)
+    private static let catalogue = Pattern(#"^[A-Z]{2,}\d+\s*-\s*"#)
+    private static let trackNumber = Pattern(#"^(?:0(\d{1,2})(?:\s*[.)\-])?\s+|(\d{1,3})[.)]\s+|(\d{1,3})\s+-\s+)(?=\S)"#)
+    private static let dashPrefix = Pattern(#"^(.+?)\s+-\s+"#)
+    private static let bracketedVideoID = Pattern(#"\s*\[[A-Za-z0-9_-]{11}\]$"#)
+    private static let trailingVideoID = Pattern(#"-([A-Za-z0-9_-]{11})$"#)
+
     static func clean(_ title: String, artist: String, album: String) -> String {
         cleanup(title, artist: artist, album: album).title
     }
@@ -14,21 +21,22 @@ enum TitleCleaner {
         var track: Int?
 
         // "Mix name | genre | Artist - Song": keep the "Artist - Song" part. Without one, every part may matter.
-        let parts = t.split(separator: #/\s+[|｜]\s+/#).map { $0.trimmingCharacters(in: .whitespaces) }
+        let parts = pipe.split(t).map { $0.trimmingCharacters(in: .whitespaces) }
         if parts.count > 1, let song = parts.last(where: { $0.contains(" - ") }) { t = song }
 
         // Prefixes come in any order ("OMA - 003 Cedar", "003 OMA - Cedar"), so strip until nothing changes.
         var previous = ""
         while previous != t {
             previous = t
-            t = t.replacing(#/^[A-Z]{2,}\d+\s*-\s*/#, with: "")  // catalogue number "EC100 - "
+            t = catalogue.replacing(in: t)  // catalogue number "EC100 - "
             // Track number: zero-padded ("007 ") or with punctuation ("1. ", "02 - ").
             // A bare "99 Problems" and a time-like "4:44" stay.
-            if let m = t.firstMatch(of: #/^(?:0(\d{1,2})(?:\s*[.)\-])?\s+|(\d{1,3})[.)]\s+|(\d{1,3})\s+-\s+)(?=\S)/#) {
-                track = track ?? (m.1 ?? m.2 ?? m.3).flatMap { Int($0) }
+            if let m = trackNumber.firstMatch(in: t) {
+                track = track ?? m.groups.lazy.compactMap { $0 }.first.flatMap { Int($0) }
                 t = String(t[m.range.upperBound...])
             }
-            if let prefix = t.firstMatch(of: #/^(.+?)\s+-\s+/#), isAlbumOrArtist(String(prefix.1), artist: artist, album: album) {
+            if let prefix = dashPrefix.firstMatch(in: t), let name = prefix.groups[0],
+               isAlbumOrArtist(name, artist: artist, album: album) {
                 t = String(t[prefix.range.upperBound...])   // "Wagon Christ - ", "Throbbing Pouch (1995) - "
             }
         }
@@ -47,8 +55,8 @@ enum TitleCleaner {
 
     /// Removes a YouTube video ID: "[eAWTeXE2SiQ]" or "-y0LDKI6VERU" at the end.
     static func stripVideoID(_ s: String) -> String {
-        var s = s.replacing(#/\s*\[[A-Za-z0-9_-]{11}\]$/#, with: "")
-        if let m = s.firstMatch(of: #/-([A-Za-z0-9_-]{11})$/#), looksLikeVideoID(String(m.1)) {
+        var s = bracketedVideoID.replacing(in: s)
+        if let m = trailingVideoID.firstMatch(in: s), let id = m.groups[0], looksLikeVideoID(id) {
             s = String(s[..<m.range.lowerBound])
         }
         return s
