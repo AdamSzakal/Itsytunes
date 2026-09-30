@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct TinyPlayerApp: App {
+struct ElanPlayerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var library = Library()
     @State private var player = Player()
@@ -13,7 +13,7 @@ struct TinyPlayerApp: App {
     }
 
     var body: some Scene {
-        Window("TinyPlayer", id: "main") {
+        Window("Elan Player", id: "main") {
             ContentView()
                 .environment(library)
                 .environment(player)
@@ -25,6 +25,11 @@ struct TinyPlayerApp: App {
             CommandGroup(after: .newItem) {
                 Button("Choose Folder…") { library.chooseFolder() }.keyboardShortcut("o")
                 Button("Rescan Folder") { library.rescan() }.keyboardShortcut("r")
+                Button("Clean Up All Titles…") { NotificationCenter.default.post(name: .cleanUpAllTitles, object: nil) }
+            }
+            // Replaces the text Find/Spelling menus (nothing here edits text) with a Find that focuses the library search.
+            CommandGroup(replacing: .textEditing) {
+                Button("Find") { focusLibrarySearch() }.keyboardShortcut("f")
             }
             CommandMenu("Controls") {
                 Button(player.isPlaying ? "Pause" : "Play") { player.toggle() }
@@ -37,6 +42,14 @@ struct TinyPlayerApp: App {
             SettingsView().environment(library)
         }
     }
+}
+
+/// SwiftUI has no API to focus a toolbar `.searchable` field before macOS 15, so ask the toolbar item directly.
+@MainActor
+private func focusLibrarySearch() {
+    let window = NSApp.keyWindow ?? NSApp.mainWindow
+    let item = window?.toolbar?.items.lazy.compactMap { $0 as? NSSearchToolbarItem }.first
+    item?.beginSearchInteraction()
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {

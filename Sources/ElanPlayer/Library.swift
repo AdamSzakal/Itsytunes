@@ -7,28 +7,48 @@ import Observation
 @MainActor @Observable
 final class Library {
     private(set) var folder: URL?
-    private(set) var songs: [Song] = []
+    private(set) var songs: [Song] = [] {
+        didSet { refreshNoisyTitles() }
+    }
+    /// Set while confirmed tag changes are written, for the toolbar button's spinner.
+    private(set) var tagWrite: (verb: String, done: Int, total: Int)?
+    /// Songs whose title the `TitleCleaner` would change, minus titles the user chose to keep.
+    private(set) var noisyTitles: [Song] = []
+    /// Clean-up check result per song state ("path|title|artist|album|track"). The check runs several
+    /// patterns over each title; without this, every library change re-checked every song on the main thread.
+    @ObservationIgnored private var noisyCache: [String: Bool] = [:]
+    /// "path|title" of titles the user reviewed and left unchanged.
+    @ObservationIgnored private var keptTitles = Set(UserDefaults.standard.stringArray(forKey: "keptTitles") ?? [])
     private(set) var scanStatus: String?
     private(set) var tagStatus: String?
     /// Off by default: reading an online-only file (Dropbox, iCloud) makes the provider download it.
     var includeOnlineOnly = UserDefaults.standard.bool(forKey: "includeOnlineOnly") {
         didSet {
             UserDefaults.standard.set(includeOnlineOnly, forKey: "includeOnlineOnly")
-            rescan()
+            rescan(restart: true)
         }
     }
 
     @ObservationIgnored private var watcher: FolderWatcher?
     @ObservationIgnored private var scanTask: Task<Void, Never>?
+    /// Files changed during a scan: scan once more when it ends.
+    @ObservationIgnored private var rescanPending = false
     @ObservationIgnored private var tagTask: Task<Void, Never>?
     /// Songs whose lookup failed (e.g. offline) in this session.
     @ObservationIgnored private var skipped: Set<String> = []
 
-    private static let cacheFile = AppPaths.support.appendingPathComponent("library.json")
+    /// v2: cover keys come from image content. v1 keyed covers by album, so it is dropped once.
+    private static let cacheFile = AppPaths.support.appendingPathComponent("library-v2.json")
+    private static let oldCacheFile = AppPaths.support.appendingPathComponent("library.json")
     nonisolated private static let audioExtensions: Set = ["mp3", "m4a", "aac", "flac", "wav", "aif", "aiff", "caf"]
 
     init() {
+        if FileManager.default.fileExists(atPath: Self.oldCacheFile.path) {
+            try? FileManager.default.removeItem(at: Self.oldCacheFile)
+            try? FileManager.default.removeItem(at: ArtworkStore.dir)
+        }
         songs = (try? JSONDecoder().decode([Song].self, from: Data(contentsOf: Self.cacheFile))) ?? []
+        refreshNoisyTitles() // didSet does not run inside init
         if let path = UserDefaults.standard.string(forKey: "folder") {
             open(URL(fileURLWithPath: path, isDirectory: true))
         }
@@ -50,13 +70,21 @@ final class Library {
         folder = url
         UserDefaults.standard.set(url.path, forKey: "folder")
         watcher = FolderWatcher(path: url.path) { [weak self] in self?.rescan() }
-        rescan()
+        rescan(restart: true)
     }
 
-    func rescan() {
+    /// Scans the folder. A scan that is running finishes first (then one more follows), so a folder that
+    /// changes all the time, like a syncing Dropbox, still gets scanned to the end.
+    /// `restart` stops the running scan instead, for a new folder or setting.
+    func rescan(restart: Bool = false) {
         guard let folder else { return }
+        if scanTask != nil && !restart {
+            rescanPending = true
+            return
+        }
         let includeOnlineOnly = includeOnlineOnly
         scanTask?.cancel()
+        rescanPending = false
         scanTask = Task {
             scanStatus = "Scanning…"
             let files = await Task.detached(priority: .utility) {
@@ -88,10 +116,13 @@ final class Library {
                 // A newer scan (other folder, or a file change) may have started while this batch was read.
                 guard !Task.isCancelled else { return }
                 songs.append(contentsOf: read)
+                // Keep progress: a long first scan (e.g. a syncing Dropbox) may be cut short by quitting.
+                if start % 80 == 0 { save() }
             }
             scanStatus = nil
             save()
-            autoTag()
+            scanTask = nil
+            if rescanPending { rescan() } else { autoTag() }
         }
     }
 
@@ -103,7 +134,8 @@ final class Library {
                   let song = songs.first(where: { !$0.autoTagged && !skipped.contains($0.path) }) {
                 let left = songs.filter { !$0.autoTagged && !skipped.contains($0.path) }.count
                 tagStatus = "Tagging \(done + 1) of \(done + left)"
-                let result = await Tagger.process(song, root: folder)
+                let covers = albumCovers()
+                let result = await Tagger.process(song, root: folder) { covers[Self.albumID($0, $1)] }
                 if result.retry { skipped.insert(song.path) }
                 if let i = songs.firstIndex(where: { $0.path == song.path }) { songs[i] = result.song }
                 done += 1
@@ -114,6 +146,61 @@ final class Library {
             tagTask = nil
             save()
         }
+    }
+
+    /// Album ID -> the cover key of one song on that album.
+    private func albumCovers() -> [String: String] {
+        var covers: [String: String] = [:]
+        for song in songs where !song.album.isEmpty {
+            if let key = song.artworkKey { covers[Self.albumID(song.artist, song.album)] = key }
+        }
+        return covers
+    }
+
+    private nonisolated static func albumID(_ artist: String, _ album: String) -> String {
+        "\(artist.lowercased())|\(album.lowercased())"
+    }
+
+    /// Replaces a song after its tags changed (see `TagFixer`).
+    /// Writes confirmed tag changes in the background, one file at a time.
+    /// `kept` are reviewed titles the user left unchecked (see `keepTitles`).
+    func write(_ proposals: [TagProposal], verb: String, keeping kept: [Song]) {
+        guard !proposals.isEmpty || !kept.isEmpty else { return }
+        tagWrite = (verb, 0, proposals.count)
+        Task {
+            for proposal in proposals {
+                update(await TagFixer.apply(proposal))
+                tagWrite?.done += 1
+            }
+            keepTitles(of: kept)
+            tagWrite = nil
+        }
+    }
+
+    /// Stops offering these titles for clean-up. The title is part of the key, so a later change is offered again.
+    func keepTitles(of songs: [Song]) {
+        keptTitles.formUnion(songs.map(Self.keptKey))
+        UserDefaults.standard.set(Array(keptTitles), forKey: "keptTitles")
+        refreshNoisyTitles()
+    }
+
+    private func refreshNoisyTitles() {
+        noisyTitles = songs.filter { song in
+            guard !keptTitles.contains(Self.keptKey(song)) else { return false }
+            let key = "\(song.path)|\(song.displayTitle)|\(song.artist)|\(song.album)|\(song.track ?? 0)"
+            if let noisy = noisyCache[key] { return noisy }
+            let noisy = TagFixer.cleanupProposal(for: song) != nil
+            noisyCache[key] = noisy
+            return noisy
+        }
+    }
+
+    private static func keptKey(_ song: Song) -> String { "\(song.path)|\(song.displayTitle)" }
+
+    func update(_ song: Song) {
+        guard let i = songs.firstIndex(where: { $0.path == song.path }) else { return }
+        songs[i] = song
+        save()
     }
 
     private func save() {

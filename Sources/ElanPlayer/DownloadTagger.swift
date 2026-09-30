@@ -14,6 +14,8 @@ enum DownloadTagger {
         let album: String?
         let track: String?
         let release_year: Int?
+        let description: String?
+        let duration: Double?
     }
 
     struct Guess: Equatable {
@@ -23,9 +25,11 @@ enum DownloadTagger {
         var year = ""
     }
 
-    /// `work` holds `video.info.json`, an optional `cover.jpg`, and either `chapters/<any>/NN - Title.mp3`
-    /// or `full/<any>.mp3`. The finished files are moved into `folder`.
-    static func finish(work: URL, into folder: URL) async throws {
+    /// `work` holds `video.info.json`, an optional `cover.jpg`, `full/<any>.mp3`, and possibly
+    /// `chapters/<any>/NN - Title.mp3`. The finished files are moved into `folder`.
+    /// Without usable chapters, a tracklist in the description is used to split the full file (needs `ffmpeg`).
+    /// Every title goes through the `TitleCleaner`, so downloads need no clean-up afterwards.
+    static func finish(work: URL, into folder: URL, ffmpeg: URL?) async throws {
         let fm = FileManager.default
         let files = (try? fm.contentsOfDirectory(at: work, includingPropertiesForKeys: nil)) ?? []
         let info = try JSONDecoder().decode(VideoInfo.self, from: Data(contentsOf: work.appendingPathComponent("video.info.json")))
@@ -42,12 +46,32 @@ enum DownloadTagger {
         .sorted { $0.number < $1.number }
 
         var guess = Self.guess(info)
-        let isAlbum = !chapters.isEmpty
-        let songTitles = chapters.map { chapterTitle($0.file, artist: guess.artist) }
+        // Some uploads have broken chapters: one holding the whole tracklist ("1. Beef Rapp - 0:01 2. Hoe
+        // Cakes - 4:40 ..."). Splitting by those gives junk files, so keep the full file instead.
+        let broken = chapters.contains {
+            // yt-dlp writes ":" in file names as "：" (full width).
+            $0.file.lastPathComponent.matches(of: #/\d{1,2}[:：⧸]\d{2}/#).count >= 2
+        }
+        let full = (try? fm.contentsOfDirectory(at: work.appendingPathComponent("full"), includingPropertiesForKeys: nil))?
+            .first { $0.pathExtension == "mp3" }
+
+        // Songs of the album, in order: yt-dlp's chapters, else a tracklist from the description.
+        var songs: [(file: URL, number: Int, title: String)] = []
+        if chapters.count >= 2 && !broken {
+            songs = chapters.map { ($0.file, $0.number, chapterTitle($0.file, artist: guess.artist)) }
+        } else if let full, let ffmpeg,
+                  let tracks = Tracklist.parse(info.description ?? "", duration: info.duration ?? 0),
+                  let files = try? Tracklist.split(full, into: tracks, directory: work.appendingPathComponent("tracks"), ffmpeg: ffmpeg) {
+            songs = zip(files, tracks).enumerated().map { i, pair in
+                (pair.0, i + 1, TitleCleaner.clean(pair.1.title, artist: guess.artist, album: guess.name))
+            }
+        }
+        let isAlbum = !songs.isEmpty
+        let songTitles = songs.map(\.title)
 
         // One lookup per video: for an album, its first song identifies the release.
         let match = try? await OnlineLookup.shared.find(
-            title: songTitles.first ?? guess.name, artist: guess.artist, album: isAlbum ? guess.name : ""
+            title: isAlbum ? (songTitles.first ?? guess.name) : guess.name, artist: guess.artist, album: isAlbum ? guess.name : ""
         )
         let sameAlbum = match.map { OnlineLookup.normalize($0.album) == OnlineLookup.normalize(guess.name) } ?? false
         let trusted = isAlbum ? (sameAlbum ? match : nil) : match
@@ -60,16 +84,15 @@ enum DownloadTagger {
             let album = trusted?.album ?? guess.name
             let target = unique(folder.appendingPathComponent(safeName("\(guess.artist) - \(album)")))
             try fm.createDirectory(at: target, withIntermediateDirectories: true)
-            for (chapter, title) in zip(chapters, songTitles) {
-                let tags = Tags(title: title, artist: guess.artist, album: album, year: guess.year,
-                                genre: trusted?.genre ?? "", track: chapter.number)
-                try? ID3Writer.write(tags, artwork: artwork, to: chapter.file, replacing: true)
-                let name = String(format: "%02d - ", chapter.number) + safeName(title) + ".mp3"
-                try fm.moveItem(at: chapter.file, to: target.appendingPathComponent(name))
+            for song in songs {
+                let tags = Tags(title: song.title, artist: guess.artist, album: album, year: guess.year,
+                                genre: trusted?.genre ?? "", track: song.number)
+                try? ID3Writer.write(tags, artwork: artwork, to: song.file, replacing: true)
+                let name = String(format: "%02d - ", song.number) + safeName(song.title) + ".mp3"
+                try fm.moveItem(at: song.file, to: target.appendingPathComponent(name))
             }
         } else {
-            let full = (try? fm.contentsOfDirectory(at: work.appendingPathComponent("full"), includingPropertiesForKeys: nil)) ?? []
-            guard let file = full.first(where: { $0.pathExtension == "mp3" }) else { return }
+            guard let file = full else { return }
             let tags = Tags(title: guess.name, artist: guess.artist, album: trusted?.album ?? "", year: guess.year,
                             genre: trusted?.genre ?? "", track: trusted?.track)
             try? ID3Writer.write(tags, artwork: artwork, to: file, replacing: true)
@@ -88,8 +111,12 @@ enum DownloadTagger {
         for separator in [" - ", " – ", " — "] {
             if let range = title.range(of: separator) {
                 return Guess(artist: String(title[..<range.lowerBound]).trimmingCharacters(in: .whitespaces),
-                             name: String(title[range.upperBound...]).trimmingCharacters(in: .whitespaces))
+                             name: TitleCleaner.clean(String(title[range.upperBound...]), artist: "", album: ""))
             }
+        }
+        // MF DOOM "Mm.. Food": the name in double quotes.
+        if let m = title.firstMatch(of: #/^(.+?)\s+["“](.+?)["”]/#) {
+            return Guess(artist: String(m.1), name: String(m.2))
         }
         // No "Artist - " in the title: the channel is the best guess ("Deep Purple - Topic", "DeepPurpleVEVO").
         let channel = (info.channel ?? info.uploader ?? "")
@@ -99,27 +126,28 @@ enum DownloadTagger {
 
     /// Removes upload noise: "(Full Album)", "[Official Video]", "| Lyrics", "Full Album".
     static func clean(_ title: String) -> String {
+        stripNoise(title.replacing(#/\s*[|｜].*$/#, with: ""))
+    }
+
+    /// Removes "(Official Video)"-style brackets and a trailing "Full Album", keeping the rest.
+    static func stripNoise(_ title: String) -> String {
         title
             .replacing(#/(?i)\s*[\(\[\{][^\)\]\}]*\b(full album|official|lyrics?|audio|video|visuali[sz]er|hd|hq|4k|remaster(ed)?|explicit)\b[^\)\]\}]*[\)\]\}]/#, with: "")
-            .replacing(#/\s*[|｜].*$/#, with: "")
             .replacing(#/(?i)\s+full album$/#, with: "")
             .trimmingCharacters(in: .whitespaces)
     }
 
     /// "01 - 1. Highway Star.mp3" -> "Highway Star"; also drops a repeated "Artist - ".
     static func chapterTitle(_ file: URL, artist: String) -> String {
-        var title = file.deletingPathExtension().lastPathComponent
-            .replacing(#/^\d+ - /#, with: "")                  // our own "NN - " prefix
-            .replacing(#/^\s*\d{1,3}\s*[.):\-]\s*/#, with: "")  // numbering from the video description
-        if !artist.isEmpty, title.lowercased().hasPrefix(artist.lowercased() + " - ") {
-            title = String(title.dropFirst(artist.count + 3))
-        }
-        return clean(title)
+        let title = file.deletingPathExtension().lastPathComponent
+            .replacing(#/^\d+ - /#, with: "")  // our own "NN - " prefix
+        return TitleCleaner.clean(title, artist: artist, album: "")
     }
 
-    /// File names cannot hold "/" and Finder shows ":" as "/".
+    /// File names cannot hold "/", Finder shows ":" as "/", and a name may have at most 255 bytes.
     private static func safeName(_ s: String) -> String {
-        s.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        let name = s.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        return name.count > 120 ? String(name.prefix(120)).trimmingCharacters(in: .whitespaces) + "…" : name
     }
 
     /// "Song.mp3" -> "Song (2).mp3" when the name is taken.
