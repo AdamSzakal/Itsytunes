@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct ElanPlayerApp: App {
+struct ItsytunesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var library = Library()
     @State private var player = Player()
@@ -13,7 +13,7 @@ struct ElanPlayerApp: App {
     }
 
     var body: some Scene {
-        Window("Elan Player", id: "main") {
+        Window("Itsytunes", id: "main") {
             ContentView()
                 .environment(library)
                 .environment(player)

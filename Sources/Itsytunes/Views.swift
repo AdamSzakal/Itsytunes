@@ -48,7 +48,7 @@ struct ContentView: View {
                 ContentUnavailableView {
                     Label("No Music Folder", systemImage: "music.note.list")
                 } description: {
-                    Text("Choose a folder. Elan Player finds every song in it, including subfolders.")
+                    Text("Choose a folder. Itsytunes finds every song in it, including subfolders.")
                 } actions: {
                     Button("Choose Folder…") { library.chooseFolder() }
                 }
@@ -71,7 +71,7 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.15), value: viewingArtwork?.id)
         // An empty title keeps the toolbar's flexible gap, which pushes the primary items to the right.
-        // (Removing the title removes the gap too.) The Window menu uses the scene's name, "Elan Player".
+        // (Removing the title removes the gap too.) The Window menu uses the scene's name, "Itsytunes".
         .navigationTitle("")
         .searchable(text: $search, placement: .toolbar, prompt: "Search  ⌘F")
         .toolbar {
