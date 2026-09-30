@@ -45,7 +45,7 @@ struct FixTagsSheet: View {
 
             Divider()
             HStack {
-                Text("MP3 files are rewritten. Other formats change in Elan Player only.")
+                Text("MP3 files are rewritten. Other formats change in Itsytunes only.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Spacer()

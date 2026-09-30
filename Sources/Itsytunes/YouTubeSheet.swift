@@ -55,7 +55,7 @@ struct YouTubeSheet: View {
             }
             Button("OK", role: .cancel) {}
         } message: {
-            Text("Elan Player uses yt-dlp and ffmpeg to download audio. Install them with Homebrew:\n\n\(Tools.installCommand)")
+            Text("Itsytunes uses yt-dlp and ffmpeg to download audio. Install them with Homebrew:\n\n\(Tools.installCommand)")
         }
     }
 

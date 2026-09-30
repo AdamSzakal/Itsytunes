@@ -2,9 +2,9 @@
 import PackageDescription
 
 let package = Package(
-    name: "ElanPlayer",
+    name: "Itsytunes",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "ElanPlayer", path: "Sources/ElanPlayer")
+        .executableTarget(name: "Itsytunes", path: "Sources/Itsytunes")
     ]
 )

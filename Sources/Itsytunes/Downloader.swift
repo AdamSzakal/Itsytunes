@@ -81,7 +81,7 @@ final class Downloader {
     ) async throws {
         let fm = FileManager.default
         // Work in a temporary folder, so the library only ever sees finished files.
-        let work = fm.temporaryDirectory.appendingPathComponent("ElanPlayer-\(video.id)-\(UUID().uuidString)")
+        let work = fm.temporaryDirectory.appendingPathComponent("Itsytunes-\(video.id)-\(UUID().uuidString)")
         defer { try? fm.removeItem(at: work) }
 
         let process = Process()
