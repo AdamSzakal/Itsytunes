@@ -5,13 +5,14 @@
 #   SIGN_IDENTITY="My Cert" ./scripts/build-app.sh
 set -e
 cd "$(dirname "$0")/.."
-VERSION="${VERSION:-0.2.1}"
-# Universal binary, so it runs on Apple Silicon and Intel Macs.
-swift build -c release --arch arm64 --arch x86_64
+VERSION="${VERSION:-0.2.2}"
+# Universal binary, so it runs on Apple Silicon and Intel Macs. Optimized for size, unused code dropped.
+swift build -c release --arch arm64 --arch x86_64 -Xswiftc -Osize -Xlinker -dead_strip
 APP="build/Itsytunes.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/apple/Products/Release/Itsytunes "$APP/Contents/MacOS/"
+strip -x "$APP/Contents/MacOS/Itsytunes" # debug symbols: more than half the binary (before signing)
 cp Resources/AppIcon.icns "$APP/Contents/Resources/" # made by scripts/make-icon.swift
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

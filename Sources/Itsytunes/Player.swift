@@ -20,10 +20,26 @@ final class Player: NSObject, AVAudioPlayerDelegate {
     /// The table rows (sorted and filtered) at the time the user started playback.
     @ObservationIgnored private var queue: [Song] = []
     @ObservationIgnored private var timer: Timer?
+    /// The library's songs, for pressing play with nothing chosen (set by the main window).
+    @ObservationIgnored var library: () -> [Song] = { [] }
 
     override init() {
         super.init()
         setUpRemoteCommands()
+        claimMediaKeys()
+    }
+
+    /// macOS sends the keyboard's play key to the app that last reported playing, and if that is none
+    /// (or Apple Music), it opens Apple Music. Reporting "playing" for a moment at launch makes Itsytunes
+    /// that app, so the play key starts a random song instead (see `toggle`).
+    private func claimMediaKeys() {
+        let center = MPNowPlayingInfoCenter.default()
+        center.nowPlayingInfo = [MPMediaItemPropertyTitle: "Itsytunes"]
+        center.playbackState = .playing
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            if self.current == nil { self.updateNowPlaying() } // back to "paused"
+        }
     }
 
     func play(_ song: Song, queue: [Song]) {
@@ -31,14 +47,22 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         start(song)
     }
 
+    /// Play/pause. With nothing loaded yet, starts a random song in shuffle mode.
     func toggle() {
-        guard let audio else { return }
+        guard let audio else { return playRandom() }
         if audio.isPlaying { audio.pause() } else { audio.play() }
         isPlaying = audio.isPlaying
         updateNowPlaying()
     }
 
     func next() { advance(by: 1) }
+
+    private func playRandom() {
+        let songs = library()
+        guard let song = songs.randomElement() else { return }
+        shuffle = true
+        play(song, queue: songs)
+    }
 
     func previous() {
         if currentTime > 3 { seek(to: 0) } else { advance(by: -1) }
@@ -121,9 +145,11 @@ final class Player: NSObject, AVAudioPlayerDelegate {
 
     private func updateNowPlaying() {
         let center = MPNowPlayingInfoCenter.default()
+        // macOS sends the keyboard's play key to the "now playing" app, and without one it opens Apple Music.
+        // So with nothing loaded, Itsytunes still shows as paused: the play key then starts a random song.
         guard let current else {
-            center.nowPlayingInfo = nil
-            center.playbackState = .stopped
+            center.nowPlayingInfo = [MPMediaItemPropertyTitle: "Itsytunes"]
+            center.playbackState = .paused
             return
         }
         var info: [String: Any] = [

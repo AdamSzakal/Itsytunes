@@ -126,14 +126,18 @@ enum DownloadTagger {
 
     /// Removes upload noise: "(Full Album)", "[Official Video]", "| Lyrics", "Full Album".
     static func clean(_ title: String) -> String {
-        stripNoise(title.replacing(#/\s*[|｜].*$/#, with: ""))
+        stripNoise(pipeTail.replacing(in: title))
     }
+
+    private static let pipeTail = Pattern(#"\s*[|｜].*$"#)
+    private static let noiseBrackets = Pattern(
+        #"(?i)\s*[\(\[\{][^\)\]\}]*\b(full album|official|lyrics?|audio|video|visuali[sz]er|hd|hq|4k|remaster(ed)?|explicit)\b[^\)\]\}]*[\)\]\}]"#
+    )
+    private static let fullAlbumSuffix = Pattern(#"(?i)\s+full album$"#)
 
     /// Removes "(Official Video)"-style brackets and a trailing "Full Album", keeping the rest.
     static func stripNoise(_ title: String) -> String {
-        title
-            .replacing(#/(?i)\s*[\(\[\{][^\)\]\}]*\b(full album|official|lyrics?|audio|video|visuali[sz]er|hd|hq|4k|remaster(ed)?|explicit)\b[^\)\]\}]*[\)\]\}]/#, with: "")
-            .replacing(#/(?i)\s+full album$/#, with: "")
+        fullAlbumSuffix.replacing(in: noiseBrackets.replacing(in: title))
             .trimmingCharacters(in: .whitespaces)
     }
 

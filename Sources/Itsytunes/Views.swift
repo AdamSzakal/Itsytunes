@@ -74,6 +74,7 @@ struct ContentView: View {
             }
         }
         .animation(.easeOut(duration: 0.15), value: viewingArtwork?.id)
+        .onAppear { player.library = { [library] in library.songs } }
         // An empty title keeps the toolbar's flexible gap, which pushes the primary items to the right.
         // (Removing the title removes the gap too.) The Window menu uses the scene's name, "Itsytunes".
         .navigationTitle("")
@@ -260,6 +261,7 @@ struct PlayerBar: View {
             HStack(spacing: 18) {
                 IconButton(symbol: "shuffle", active: player.shuffle) { player.shuffle.toggle() }
                 IconButton(symbol: "backward.fill") { player.previous() }
+                    .disabled(player.current == nil)
                 Button(action: player.toggle) {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 12))
@@ -269,9 +271,9 @@ struct PlayerBar: View {
                 }
                 .buttonStyle(.plain)
                 IconButton(symbol: "forward.fill") { player.next() }
+                    .disabled(player.current == nil)
                 IconButton(symbol: "repeat", active: player.repeatAll) { player.repeatAll.toggle() }
             }
-            .disabled(player.current == nil)
 
             HStack(spacing: 10) {
                 ArtworkView(key: player.current?.artworkKey, size: 44)
