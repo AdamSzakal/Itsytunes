@@ -17,7 +17,11 @@ struct Song: Identifiable, Codable, Hashable, Sendable {
 
     var id: String { path }
     var url: URL { URL(fileURLWithPath: path) }
-    var displayTitle: String { title.isEmpty ? url.deletingPathExtension().lastPathComponent : title }
+    /// The title, or the file name for untagged songs. Called in every sort comparison, so it avoids
+    /// building a URL (which the profiler showed as the main cost of large sorts).
+    var displayTitle: String {
+        title.isEmpty ? ((path as NSString).lastPathComponent as NSString).deletingPathExtension : title
+    }
     /// `Int?` is not Comparable, so untracked songs sort last.
     var trackSort: Int { track ?? .max }
 
@@ -26,10 +30,7 @@ struct Song: Identifiable, Codable, Hashable, Sendable {
         var song = Song(path: url.path, modified: modified)
         song.apply(tags)
         song.duration = tags.duration
-        if let art = tags.artwork {
-            let key = ArtworkStore.key(artist: song.artist, album: song.album, path: song.path)
-            if ArtworkStore.save(art, key: key) { song.artworkKey = key }
-        }
+        song.artworkKey = tags.artwork.flatMap(ArtworkStore.save)
         return song
     }
 
@@ -63,6 +64,7 @@ struct Tags: Sendable {
 enum AppPaths {
     static let support: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            // Old app name, kept so the library cache and artwork survive the rename.
             .appendingPathComponent("TinyPlayer", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir

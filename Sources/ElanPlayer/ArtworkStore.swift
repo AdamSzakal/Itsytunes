@@ -3,28 +3,20 @@ import CryptoKit
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Cover images, shared per album, kept as 512 px JPEGs in Application Support.
+/// Cover images kept as 512 px JPEGs in Application Support.
+/// An image's key comes from its content: songs with the same cover share one file, and
+/// songs with wrong, shared album tags (common in YouTube rips) still keep their own cover.
 enum ArtworkStore {
-    private static let dir: URL = {
-        let dir = AppPaths.support.appendingPathComponent("Artwork", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }()
+    static let dir = AppPaths.support.appendingPathComponent("Artwork", isDirectory: true)
     private static let cache = NSCache<NSString, NSImage>()
-
-    static func key(artist: String, album: String, path: String) -> String {
-        let base = album.isEmpty ? path : "\(artist.lowercased())|\(album.lowercased())"
-        return SHA256.hash(data: Data(base.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
-    }
 
     static func url(_ key: String) -> URL { dir.appendingPathComponent(key + ".jpg") }
 
-    static func exists(_ key: String) -> Bool { FileManager.default.fileExists(atPath: url(key).path) }
-
-    /// Stores `data` under `key` unless an image is already there. Returns false if `data` is not an image.
-    @discardableResult
-    static func save(_ data: Data, key: String) -> Bool {
-        if exists(key) { return true }
+    /// Stores the image and returns its key, or nil if `data` is not an image.
+    static func save(_ data: Data) -> String? {
+        let key = SHA256.hash(data: data).prefix(12).map { String(format: "%02x", $0) }.joined()
+        if FileManager.default.fileExists(atPath: url(key).path) { return key }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let options = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -33,9 +25,9 @@ enum ArtworkStore {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options),
               let dest = CGImageDestinationCreateWithURL(url(key) as CFURL, UTType.jpeg.identifier as CFString, 1, nil)
-        else { return false }
+        else { return nil }
         CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
-        return CGImageDestinationFinalize(dest)
+        return CGImageDestinationFinalize(dest) ? key : nil
     }
 
     static func image(_ key: String) -> NSImage? {

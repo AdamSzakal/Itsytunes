@@ -81,7 +81,7 @@ final class Downloader {
     ) async throws {
         let fm = FileManager.default
         // Work in a temporary folder, so the library only ever sees finished files.
-        let work = fm.temporaryDirectory.appendingPathComponent("TinyPlayer-\(video.id)-\(UUID().uuidString)")
+        let work = fm.temporaryDirectory.appendingPathComponent("ElanPlayer-\(video.id)-\(UUID().uuidString)")
         defer { try? fm.removeItem(at: work) }
 
         let process = Process()
@@ -94,10 +94,11 @@ final class Downloader {
             "--split-chapters", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg",
             "--ffmpeg-location", ffmpeg.deletingLastPathComponent().path,
             "--progress-template", "download:PROGRESS %(progress._percent_str)s",
-            "--output", work.path + "/full/%(title)s.%(ext)s",
+            // Named by video ID and capped chapter names: titles can exceed the 255-byte file name limit.
+            "--output", work.path + "/full/%(id)s.%(ext)s",
             "--output", "infojson:" + work.path + "/video",
             "--output", "thumbnail:" + work.path + "/cover",
-            "--output", "chapter:" + work.path + "/chapters/%(title)s/%(section_number)02d - %(section_title)s.%(ext)s",
+            "--output", "chapter:" + work.path + "/chapters/%(id)s/%(section_number)02d - %(section_title).120B.%(ext)s",
             video.url.absoluteString,
         ]
         var environment = ProcessInfo.processInfo.environment
@@ -136,7 +137,7 @@ final class Downloader {
         }
 
         progress(.processing)
-        try await DownloadTagger.finish(work: work, into: folder)
+        try await DownloadTagger.finish(work: work, into: folder, ffmpeg: ffmpeg)
     }
 }
 

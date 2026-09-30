@@ -101,7 +101,7 @@ final class YouTubeAccount {
 
 /// Stores the API key in the login Keychain instead of the plain-text defaults file.
 enum Keychain {
-    private static let service = "local.tinyplayer"
+    private static let service = "local.tinyplayer" // old app name, kept so the saved key still works
 
     static func get(_ account: String) -> String? {
         let query: [CFString: Any] = [

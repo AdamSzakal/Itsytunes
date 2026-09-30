@@ -10,6 +10,9 @@ struct YouTubeSheet: View {
     @State private var loading = false
     @State private var error: String?
     @State private var missingTools: [String] = []
+    /// Result chosen with the arrow keys; Enter downloads it.
+    @State private var highlighted: Int?
+    @State private var keyMonitor: Any?
 
     init(query: String) {
         _query = State(initialValue: query)
@@ -39,6 +42,10 @@ struct YouTubeSheet: View {
         }
         .frame(width: 560, height: 460)
         .task { await search() }
+        .onChange(of: results.map(\.id)) { highlighted = nil }
+        // A local monitor sees the keys before the search field does, which would use ↑/↓ to move its cursor.
+        .onAppear { keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: handleKey) }
+        .onDisappear { keyMonitor.map(NSEvent.removeMonitor) }
         .alert("\(missingTools.joined(separator: " and ")) not installed", isPresented: Binding(
             get: { !missingTools.isEmpty }, set: { if !$0 { missingTools = [] } }
         )) {
@@ -48,14 +55,33 @@ struct YouTubeSheet: View {
             }
             Button("OK", role: .cancel) {}
         } message: {
-            Text("TinyPlayer uses yt-dlp and ffmpeg to download audio. Install them with Homebrew:\n\n\(Tools.installCommand)")
+            Text("Elan Player uses yt-dlp and ffmpeg to download audio. Install them with Homebrew:\n\n\(Tools.installCommand)")
         }
+    }
+
+    /// ↓/↑ move through the results (↑ from the first one goes back to the field); Enter downloads.
+    /// Returns nil for a handled key, so no other view gets it.
+    private func handleKey(_ event: NSEvent) -> NSEvent? {
+        guard !results.isEmpty, missingTools.isEmpty else { return event }
+        switch event.keyCode {
+        case 125: // down
+            highlighted = min((highlighted ?? -1) + 1, results.count - 1)
+        case 126: // up
+            guard let index = highlighted else { return event }
+            highlighted = index == 0 ? nil : index - 1
+        case 36, 76: // return, keypad enter
+            guard let index = highlighted else { return event } // no highlight: the field searches
+            select(results[index])
+        default:
+            return event
+        }
+        return nil
     }
 
     private var hint: String {
         guard let folder = library.folder else { return "Choose a music folder first. Downloads are saved there." }
         let path = (folder.path as NSString).abbreviatingWithTildeInPath
-        return "Click a result to save its audio to \(path). Videos with chapters are split into one song per chapter."
+        return "Click a result, or pick one with ↓ and press Enter, to save its audio to \(path). Videos with chapters become one song per chapter."
     }
 
     @ViewBuilder
@@ -76,13 +102,21 @@ struct YouTubeSheet: View {
             ContentUnavailableView("Search YouTube", systemImage: "play.rectangle",
                                    description: Text("The first 10 videos are listed here."))
         } else {
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(results) { video in
-                        ResultRow(video: video, status: downloader.status[video.id]) { select(video) }
+            ScrollViewReader { scroller in
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(Array(results.enumerated()), id: \.element.id) { index, video in
+                            ResultRow(video: video, status: downloader.status[video.id], highlighted: highlighted == index) {
+                                select(video)
+                            }
+                            .id(video.id)
+                        }
                     }
+                    .padding(8)
                 }
-                .padding(8)
+                .onChange(of: highlighted) {
+                    if let highlighted { scroller.scrollTo(results[highlighted].id) }
+                }
             }
         }
     }
@@ -144,6 +178,7 @@ private struct SearchField: View {
 private struct ResultRow: View {
     let video: YouTubeVideo
     let status: Downloader.Status?
+    let highlighted: Bool
     let action: () -> Void
     @State private var hovering = false
 
@@ -167,11 +202,12 @@ private struct ResultRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .frame(maxWidth: 140, alignment: .trailing)
-                StatusIcon(status: status, hovering: hovering).frame(width: 20)
+                StatusIcon(status: status, hovering: hovering || highlighted).frame(width: 20)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background(.quaternary.opacity(hovering ? 0.8 : 0), in: RoundedRectangle(cornerRadius: 6))
+            .background(highlighted ? AnyShapeStyle(Color.accentColor.opacity(0.25)) : AnyShapeStyle(.quaternary.opacity(hovering ? 0.8 : 0)),
+                        in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

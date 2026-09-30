@@ -2,7 +2,7 @@ import Foundation
 
 /// Writes an ID3v2.4 tag to the start of an MP3 file.
 /// By default it only adds frames: a frame already in the file is never replaced or removed.
-/// `replacing: true` overwrites frames of the same kind; use it only on files TinyPlayer created itself.
+/// `replacing: true` overwrites frames of the same kind; use it only on files Elan Player created itself.
 enum ID3Writer {
     struct UnsupportedTag: Error {}
 

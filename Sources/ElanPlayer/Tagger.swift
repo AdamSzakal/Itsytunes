@@ -5,7 +5,8 @@ import Foundation
 /// other formats keep them only in the library cache.
 enum Tagger {
     /// `retry` is true when a network error stopped the lookup, so it can be tried again later.
-    static func process(_ song: Song, root: URL) async -> (song: Song, retry: Bool) {
+    /// `albumCover` returns the cover key another song of the same artist and album already has.
+    static func process(_ song: Song, root: URL, albumCover: (_ artist: String, _ album: String) -> String?) async -> (song: Song, retry: Bool) {
         var song = song
         var add = Tags() // only fields that were missing
         let guess = FilenameGuess(url: song.url, root: root)
@@ -20,7 +21,8 @@ enum Tagger {
 
         var art: Data?
         if song.artworkKey == nil {
-            art = folderArtwork(near: song.url) ?? albumArtwork(artist: artist, album: album)
+            art = folderArtwork(near: song.url)
+                ?? albumCover(artist, album).flatMap { try? Data(contentsOf: ArtworkStore.url($0)) }
         }
 
         var retry = false
@@ -44,10 +46,7 @@ enum Tagger {
         }
 
         song.apply(add)
-        if let art {
-            let key = ArtworkStore.key(artist: song.artist, album: song.album, path: song.path)
-            if ArtworkStore.save(art, key: key) { song.artworkKey = key }
-        }
+        if let art, let key = ArtworkStore.save(art) { song.artworkKey = key }
         if song.url.pathExtension.lowercased() == "mp3", !add.isEmpty || art != nil {
             do {
                 try ID3Writer.write(add, artwork: art, to: song.url)
@@ -73,13 +72,6 @@ enum Tagger {
         }
         return match.flatMap { try? Data(contentsOf: $0) }
     }
-
-    /// Cover already cached for another song of the same album.
-    private static func albumArtwork(artist: String, album: String) -> Data? {
-        guard !album.isEmpty else { return nil }
-        let key = ArtworkStore.key(artist: artist, album: album, path: "")
-        return ArtworkStore.exists(key) ? try? Data(contentsOf: ArtworkStore.url(key)) : nil
-    }
 }
 
 /// Tag guesses from the file name and folders, e.g. `Artist/Album/03 - Title.mp3`
@@ -91,7 +83,8 @@ struct FilenameGuess {
     var track: Int?
 
     init(url: URL, root: URL) {
-        var name = url.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "_", with: " ")
+        var name = TitleCleaner.stripVideoID(url.deletingPathExtension().lastPathComponent)
+            .replacingOccurrences(of: "_", with: " ")
         // "03 Title", "03. Title", "03 - Title", "1-03 Title" (disc-track)
         if let m = name.firstMatch(of: #/^(?:\d{1,2}-)?(\d{1,3})[\s.\-]+(.+)$/#) {
             track = Int(m.1)
@@ -123,6 +116,8 @@ actor OnlineLookup {
     static let shared = OnlineLookup()
 
     struct Match {
+        var title = ""
+        var artist = ""
         var album = ""
         var year = ""
         var genre = ""
@@ -172,6 +167,8 @@ actor OnlineLookup {
             return nil
         }
         return Match(
+            title: best.trackName ?? "",
+            artist: best.artistName ?? "",
             album: best.collectionName ?? "",
             year: String((best.releaseDate ?? "").prefix(4)),
             genre: best.primaryGenreName ?? "",
