@@ -44,6 +44,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            Group {
             if library.folder == nil {
                 ContentUnavailableView {
                     Label("No Music Folder", systemImage: "music.note.list")
@@ -59,6 +60,9 @@ struct ContentView: View {
             } else {
                 table
             }
+            }
+            // Always fill the space: the empty states only take their own height, which moved the player bar up.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             DownloadsBar()
             Divider()
             PlayerBar { viewingArtwork = $0 }
