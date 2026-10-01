@@ -8,6 +8,8 @@ enum LibraryLayout: String, CaseIterable {
 /// All songs grouped by album: cover and album details on the left, a compact track list on the right.
 struct AlbumListView: View {
     let songs: [Song]
+    /// Song whose album to scroll to; cleared once done.
+    @Binding var scrollTarget: Song.ID?
     let showArtwork: (Song) -> Void
     /// Songs to review, and whether to look them up online (else only clean up titles).
     let fixTags: ([Song], _ online: Bool) -> Void
@@ -44,14 +46,25 @@ struct AlbumListView: View {
         let albums = albums
         // Playback continues from one album into the next, in the order shown.
         let queue = albums.flatMap(\.tracks)
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                ForEach(albums) { album in
-                    AlbumSection(album: album, queue: queue, showArtwork: showArtwork, fixTags: fixTags)
-                    Divider().padding(.leading, 20)
+        ScrollViewReader { scroller in
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(albums) { album in
+                        AlbumSection(album: album, queue: queue, showArtwork: showArtwork, fixTags: fixTags)
+                        Divider().padding(.leading, 20)
+                    }
                 }
+                .padding(.vertical, 4)
             }
-            .padding(.vertical, 4)
+            .task(id: scrollTarget) {
+                guard let target = scrollTarget else { return }
+                // Wait for the list to lay out the new songs: scrolling in the same update does nothing.
+                try? await Task.sleep(for: .milliseconds(150))
+                if let album = albums.first(where: { $0.tracks.contains { $0.id == target } }) {
+                    scroller.scrollTo(album.id, anchor: .top)
+                }
+                scrollTarget = nil
+            }
         }
     }
 }

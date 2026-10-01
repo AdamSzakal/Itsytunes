@@ -27,9 +27,11 @@ enum DownloadTagger {
 
     /// `work` holds `video.info.json`, an optional `cover.jpg`, `full/<any>.mp3`, and possibly
     /// `chapters/<any>/NN - Title.mp3`. The finished files are moved into `folder`.
-    /// Without usable chapters, a tracklist in the description is used to split the full file (needs `ffmpeg`).
+    /// Without usable chapters, a tracklist in the description is used to split the full file (needs `ffmpeg`),
+    /// else, for a full-album upload, the song lengths of that album in the iTunes catalogue.
     /// Every title goes through the `TitleCleaner`, so downloads need no clean-up afterwards.
-    static func finish(work: URL, into folder: URL, ffmpeg: URL?) async throws {
+    /// Returns the saved files.
+    static func finish(work: URL, into folder: URL, ffmpeg: URL?) async throws -> [URL] {
         let fm = FileManager.default
         let files = (try? fm.contentsOfDirectory(at: work, includingPropertiesForKeys: nil)) ?? []
         let info = try JSONDecoder().decode(VideoInfo.self, from: Data(contentsOf: work.appendingPathComponent("video.info.json")))
@@ -54,8 +56,12 @@ enum DownloadTagger {
         }
         let full = (try? fm.contentsOfDirectory(at: work.appendingPathComponent("full"), includingPropertiesForKeys: nil))?
             .first { $0.pathExtension == "mp3" }
+        // Longer than most songs, or called a full album: the title names an album, not a song.
+        let looksLikeAlbum = (info.duration ?? 0) >= 480 || info.title.localizedCaseInsensitiveContains("full album")
+        let catalogue = looksLikeAlbum ? try? await OnlineLookup.shared.album(guess.name, artist: guess.artist) : nil
 
-        // Songs of the album, in order: yt-dlp's chapters, else a tracklist from the description.
+        // Songs of the album, in order: yt-dlp's chapters, else a tracklist from the description,
+        // else the catalogue's song lengths.
         var songs: [(file: URL, number: Int, title: String)] = []
         if chapters.count >= 2 && !broken {
             songs = chapters.map { ($0.file, $0.number, chapterTitle($0.file, artist: guess.artist)) }
@@ -65,14 +71,23 @@ enum DownloadTagger {
             songs = zip(files, tracks).enumerated().map { i, pair in
                 (pair.0, i + 1, TitleCleaner.clean(pair.1.title, artist: guess.artist, album: guess.name))
             }
+        } else if let full, let ffmpeg, let catalogue,
+                  let tracks = Tracklist.fromLengths(catalogue.tracks.map { ($0.title, $0.duration) },
+                                                     file: full, duration: info.duration ?? 0, ffmpeg: ffmpeg),
+                  let files = try? Tracklist.split(full, into: tracks, directory: work.appendingPathComponent("tracks"), ffmpeg: ffmpeg) {
+            songs = zip(files, catalogue.tracks).map { ($0, $1.number, $1.title) }
         }
         let isAlbum = !songs.isEmpty
         let songTitles = songs.map(\.title)
 
-        // One lookup per video: for an album, its first song identifies the release.
-        let match = try? await OnlineLookup.shared.find(
-            title: isAlbum ? (songTitles.first ?? guess.name) : guess.name, artist: guess.artist, album: isAlbum ? guess.name : ""
-        )
+        // One lookup per video: the catalogue album, else for an album its first song identifies the release.
+        // An unsplit full album is not looked up as a song: a song with the album's name may be on another release.
+        var match = catalogue?.match
+        if match == nil, isAlbum || !looksLikeAlbum {
+            match = try? await OnlineLookup.shared.find(
+                title: isAlbum ? (songTitles.first ?? guess.name) : guess.name, artist: guess.artist, album: isAlbum ? guess.name : ""
+            )
+        }
         let sameAlbum = match.map { OnlineLookup.normalize($0.album) == OnlineLookup.normalize(guess.name) } ?? false
         let trusted = isAlbum ? (sameAlbum ? match : nil) : match
         if let trusted, !trusted.year.isEmpty { guess.year = trusted.year }
@@ -84,25 +99,32 @@ enum DownloadTagger {
             let album = trusted?.album ?? guess.name
             let target = unique(folder.appendingPathComponent(safeName("\(guess.artist) - \(album)")))
             try fm.createDirectory(at: target, withIntermediateDirectories: true)
-            for song in songs {
+            return try songs.map { song in
                 let tags = Tags(title: song.title, artist: guess.artist, album: album, year: guess.year,
                                 genre: trusted?.genre ?? "", track: song.number)
                 try? ID3Writer.write(tags, artwork: artwork, to: song.file, replacing: true)
                 let name = String(format: "%02d - ", song.number) + safeName(song.title) + ".mp3"
-                try fm.moveItem(at: song.file, to: target.appendingPathComponent(name))
+                let saved = target.appendingPathComponent(name)
+                try fm.moveItem(at: song.file, to: saved)
+                return saved
             }
         } else {
-            guard let file = full else { return }
-            let tags = Tags(title: guess.name, artist: guess.artist, album: trusted?.album ?? "", year: guess.year,
-                            genre: trusted?.genre ?? "", track: trusted?.track)
+            guard let file = full else { return [] }
+            // An album that could not be split keeps the album name, so it is not an "Unknown Album".
+            let album = trusted?.album ?? (looksLikeAlbum ? guess.name : info.album ?? "")
+            let tags = Tags(title: guess.name, artist: guess.artist, album: album, year: guess.year,
+                            genre: trusted?.genre ?? "", track: looksLikeAlbum ? nil : trusted?.track)
             try? ID3Writer.write(tags, artwork: artwork, to: file, replacing: true)
-            try fm.moveItem(at: file, to: unique(folder.appendingPathComponent(safeName("\(guess.artist) - \(guess.name)") + ".mp3")))
+            let saved = unique(folder.appendingPathComponent(safeName("\(guess.artist) - \(guess.name)") + ".mp3"))
+            try fm.moveItem(at: file, to: saved)
+            return [saved]
         }
     }
 
     /// "Deep Purple - Machine Head (Full Album)" -> artist "Deep Purple", name "Machine Head".
     static func guess(_ info: VideoInfo) -> Guess {
-        if let artist = info.artist, let name = info.album ?? info.track {
+        // A track name means one song (a song upload also names its album); an album name alone, a whole album.
+        if let artist = info.artist, let name = info.track ?? info.album {
             // YouTube Music lists several artists as "A, B".
             let first = artist.split(separator: ",").first.map(String.init) ?? artist
             return Guess(artist: first, name: name, year: info.release_year.map(String.init) ?? "")

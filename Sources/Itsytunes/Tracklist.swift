@@ -65,6 +65,52 @@ enum Tracklist {
         return ascending && (duration <= 0 || tracks.last!.start < duration)
     }
 
+    /// Start times for an upload of a whole album, worked out from the songs' catalogue lengths. Uploads often
+    /// drop or shorten the gaps between songs, so each start is moved to the end of the nearest silence.
+    /// Nil if the lengths do not add up to the file's length.
+    static func fromLengths(_ songs: [(title: String, duration: Double)], file: URL, duration: Double, ffmpeg: URL) -> [Track]? {
+        let total = songs.reduce(0) { $0 + $1.duration }
+        guard songs.count >= 3, abs(total - duration) <= max(10, total * 0.02) else { return nil }
+        let quiet = silences(in: file, ffmpeg: ffmpeg)
+        var tracks = [Track(start: 0, title: songs[0].title)]
+        for (previous, song) in zip(songs, songs.dropFirst()) {
+            let expected = tracks.last!.start + previous.duration
+            // Distance from the expected start to a silence, zero when inside it.
+            let distance = { (r: ClosedRange<Double>) in max(r.lowerBound - expected, expected - r.upperBound, 0) }
+            let gap = quiet.filter { distance($0) <= 6 }.min { distance($0) < distance($1) }
+            // A little before the silence ends, so a soft first note is not cut.
+            let start = gap.map { max($0.lowerBound, $0.upperBound - 0.1) } ?? expected
+            tracks.append(Track(start: start, title: song.title))
+        }
+        return isBelievable(tracks, duration: duration) ? tracks : nil
+    }
+
+    /// Quiet parts of the file (below -40 dB for at least 0.3 s), from ffmpeg's silencedetect.
+    private static func silences(in file: URL, ffmpeg: URL) -> [ClosedRange<Double>] {
+        let process = Process()
+        process.executableURL = ffmpeg
+        process.arguments = ["-nostats", "-i", file.path, "-af", "silencedetect=noise=-40dB:d=0.3", "-f", "null", "-"]
+        let log = Pipe()
+        process.standardError = log
+        process.standardOutput = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return [] }
+        // Read before waiting: a full pipe would block ffmpeg.
+        let text = String(decoding: log.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        var start: Double?
+        var ranges: [ClosedRange<Double>] = []
+        for m in text.matches(of: #/silence_(start|end): (-?[\d.]+)/#) {
+            guard let time = Double(m.2) else { continue }
+            if m.1 == "start" {
+                start = time
+            } else if let s = start, s <= time {
+                ranges.append(s...time)
+                start = nil
+            }
+        }
+        return ranges
+    }
+
     /// Cuts `file` into one MP3 per track (stream copy, no re-encoding) and returns the new files in order.
     static func split(_ file: URL, into tracks: [Track], directory: URL, ffmpeg: URL) throws -> [URL] {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

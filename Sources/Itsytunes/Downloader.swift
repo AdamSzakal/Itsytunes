@@ -41,6 +41,8 @@ final class Downloader {
     private(set) var status: [YouTubeVideo.ID: Status] = [:]
     /// Downloads shown in the footer, oldest first. Finished ones leave after a moment; failed ones stay until dismissed.
     private(set) var visible: [YouTubeVideo] = []
+    /// Files of the last finished download, for the main window to show once the library has them.
+    private(set) var added: [URL] = []
 
     func download(_ video: YouTubeVideo, into folder: URL) {
         if let current = status[video.id], current.isActive || current == .done { return }
@@ -50,7 +52,7 @@ final class Downloader {
         visible.append(video)
         Task {
             do {
-                try await Self.fetch(video, into: folder, ytdlp: ytdlp, ffmpeg: ffmpeg) { update in
+                added = try await Self.fetch(video, into: folder, ytdlp: ytdlp, ffmpeg: ffmpeg) { update in
                     Task { @MainActor in
                         // Progress lines can arrive after the final status is set.
                         if self.status[video.id]?.isActive == true { self.status[video.id] = update }
@@ -78,7 +80,7 @@ final class Downloader {
     private nonisolated static func fetch(
         _ video: YouTubeVideo, into folder: URL, ytdlp: URL, ffmpeg: URL,
         progress: @escaping @Sendable (Status) -> Void
-    ) async throws {
+    ) async throws -> [URL] {
         let fm = FileManager.default
         // Work in a temporary folder, so the library only ever sees finished files.
         let work = fm.temporaryDirectory.appendingPathComponent("Itsytunes-\(video.id)-\(UUID().uuidString)")
@@ -137,7 +139,7 @@ final class Downloader {
         }
 
         progress(.processing)
-        try await DownloadTagger.finish(work: work, into: folder, ffmpeg: ffmpeg)
+        return try await DownloadTagger.finish(work: work, into: folder, ffmpeg: ffmpeg)
     }
 }
 
