@@ -2,12 +2,16 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(Library.self) private var library
+    @Environment(BandcampSync.self) private var bandcampSync
     @State private var account = YouTubeAccount.shared
+    @State private var bandcamp = BandcampAccount.shared
+    @State private var showBandcampLogin = false
     /// Saved on Return or when Settings closes, not on every keystroke.
     @State private var keyDraft = ""
 
     var body: some View {
         @Bindable var library = library
+        @Bindable var bandcamp = bandcamp
         Form {
             Section {
                 Toggle("Include online-only files", isOn: $library.includeOnlineOnly)
@@ -35,6 +39,31 @@ struct SettingsView: View {
             }
 
             Section {
+                if let username = bandcamp.username {
+                    LabeledContent("Signed in as \(username)") { Button("Sign Out") { bandcamp.signOut() } }
+                } else {
+                    LabeledContent("Not signed in") { Button("Sign In…") { showBandcampLogin = true } }
+                }
+                Picker("Format", selection: $bandcamp.format) {
+                    ForEach(BandcampFormat.allCases) { Text($0.label).tag($0) }
+                }
+                LabeledContent {
+                    Button("Sync Now") { library.folder.map(bandcampSync.sync) }
+                        .disabled(!bandcamp.isSignedIn || library.folder == nil || bandcampSync.isRunning)
+                } label: {
+                    Text(bandcampSync.status ?? bandcampSync.lastResult ?? "")
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled) // failures can be long; let them be copied
+                }
+            } header: {
+                Text("Bandcamp")
+            } footer: {
+                FormFooter {
+                    Text("Sync downloads your purchases into the music folder, and later only new ones. Albums you delete are not downloaded again. Tag fixes are saved into MP3 files only.")
+                }
+            }
+
+            Section {
                 ToolRow(name: "yt-dlp")
                 ToolRow(name: "ffmpeg")
             } header: {
@@ -55,6 +84,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $showBandcampLogin) { BandcampLoginSheet() }
         .frame(width: 480)
         .fixedSize(horizontal: false, vertical: true)
     }

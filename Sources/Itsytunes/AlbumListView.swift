@@ -130,6 +130,7 @@ private struct TrackRow: View {
                 .font(.system(size: 12))
                 .fontWeight(playing ? .semibold : .regular)
                 .lineLimit(1)
+            if let page = song.bandcampLink { BandcampMark(page: page) }
             Spacer(minLength: 12)
             Text(formatTime(song.duration)).foregroundStyle(.secondary)
         }

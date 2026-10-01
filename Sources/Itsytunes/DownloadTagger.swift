@@ -171,7 +171,7 @@ enum DownloadTagger {
     }
 
     /// File names cannot hold "/", Finder shows ":" as "/", and a name may have at most 255 bytes.
-    private static func safeName(_ s: String) -> String {
+    static func safeName(_ s: String) -> String {
         let name = s.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
         return name.count > 120 ? String(name.prefix(120)).trimmingCharacters(in: .whitespaces) + "…" : name
     }

@@ -14,6 +14,9 @@ struct Song: Identifiable, Codable, Hashable, Sendable {
     var artworkKey: String?
     /// True once the tagger has filled what it could, so it is not asked again.
     var autoTagged = false
+    /// The artist's Bandcamp page, from the comment Bandcamp writes into the files it sells.
+    /// Empty when the file has none; nil when not read yet (songs cached before this was added).
+    var bandcampPage: String?
 
     var id: String { path }
     var url: URL { URL(fileURLWithPath: path) }
@@ -22,6 +25,7 @@ struct Song: Identifiable, Codable, Hashable, Sendable {
     var displayTitle: String {
         title.isEmpty ? ((path as NSString).lastPathComponent as NSString).deletingPathExtension : title
     }
+    var bandcampLink: URL? { bandcampPage.flatMap { $0.isEmpty ? nil : URL(string: $0) } }
     /// `Int?` is not Comparable, so untracked songs sort last.
     var trackSort: Int { track ?? .max }
 
@@ -30,6 +34,7 @@ struct Song: Identifiable, Codable, Hashable, Sendable {
         var song = Song(path: url.path, modified: modified)
         song.apply(tags)
         song.duration = tags.duration
+        song.bandcampPage = tags.bandcampPage
         song.artworkKey = tags.artwork.flatMap(ArtworkStore.save)
         return song
     }
@@ -55,6 +60,8 @@ struct Tags: Sendable {
     var track: Int?
     var artwork: Data?
     var duration: Double = 0
+    /// Read only (see `Song.bandcampPage`); writers ignore it.
+    var bandcampPage = ""
 
     var isEmpty: Bool {
         [title, artist, album, year, genre].allSatisfy(\.isEmpty) && track == nil

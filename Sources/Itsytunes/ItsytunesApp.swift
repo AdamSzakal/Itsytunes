@@ -6,6 +6,7 @@ struct ItsytunesApp: App {
     @State private var library = Library()
     @State private var player = Player()
     @State private var downloader = Downloader()
+    @State private var bandcampSync = BandcampSync()
 
     init() {
         // Needed when run as a bare executable (`swift run`) instead of the .app bundle.
@@ -18,6 +19,7 @@ struct ItsytunesApp: App {
                 .environment(library)
                 .environment(player)
                 .environment(downloader)
+                .environment(bandcampSync)
                 .frame(minWidth: 760, minHeight: 420)
         }
         .defaultSize(width: 1100, height: 700)
@@ -25,6 +27,8 @@ struct ItsytunesApp: App {
             CommandGroup(after: .newItem) {
                 Button("Choose Folder…") { library.chooseFolder() }.keyboardShortcut("o")
                 Button("Rescan Folder") { library.rescan() }.keyboardShortcut("r")
+                Button("Sync Bandcamp") { library.folder.map(bandcampSync.sync) }
+                    .disabled(!BandcampAccount.shared.isSignedIn || library.folder == nil || bandcampSync.isRunning)
                 Button("Clean Up All Titles…") { NotificationCenter.default.post(name: .cleanUpAllTitles, object: nil) }
             }
             // Replaces the text Find/Spelling menus (nothing here edits text) with a Find that focuses the library search.
@@ -39,7 +43,7 @@ struct ItsytunesApp: App {
         }
 
         Settings {
-            SettingsView().environment(library)
+            SettingsView().environment(library).environment(bandcampSync)
         }
     }
 }

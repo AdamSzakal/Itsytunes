@@ -41,7 +41,7 @@ final class Library {
     /// v2: cover keys come from image content. v1 keyed covers by album, so it is dropped once.
     private static let cacheFile = AppPaths.support.appendingPathComponent("library-v2.json")
     private static let oldCacheFile = AppPaths.support.appendingPathComponent("library.json")
-    nonisolated private static let audioExtensions: Set = ["mp3", "m4a", "aac", "flac", "wav", "aif", "aiff", "caf"]
+    nonisolated static let audioExtensions: Set = ["mp3", "m4a", "aac", "flac", "wav", "aif", "aiff", "caf"]
 
     init() {
         if FileManager.default.fileExists(atPath: Self.oldCacheFile.path) {
@@ -96,9 +96,12 @@ final class Library {
             let known = Dictionary(songs.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
             var changed: [(url: URL, modified: Date)] = []
             var fresh: [Song] = []
+            // Cached before Bandcamp links were read: only the link is read, so tags from the tagger stay.
+            var unchecked: [Song] = []
             for file in files {
                 if let song = known[file.url.path], abs(song.modified.timeIntervalSince(file.modified)) < 0.001 {
                     fresh.append(song)
+                    if song.bandcampPage == nil { unchecked.append(song) }
                 } else {
                     changed.append(file)
                 }
@@ -118,6 +121,22 @@ final class Library {
                 songs.append(contentsOf: read)
                 // Keep progress: a long first scan (e.g. a syncing Dropbox) may be cut short by quitting.
                 if start % 80 == 0 { save() }
+            }
+            for start in stride(from: 0, to: unchecked.count, by: 8) {
+                guard !Task.isCancelled else { return }
+                scanStatus = "Reading tags \(start + 1) of \(unchecked.count)"
+                let batch = unchecked[start..<min(start + 8, unchecked.count)]
+                let pages = await withTaskGroup(of: (String, String).self) { group in
+                    for song in batch { group.addTask { (song.path, await MetadataReader.read(song.url).bandcampPage) } }
+                    return await group.reduce(into: [:]) { $0[$1.0] = $1.1 }
+                }
+                guard !Task.isCancelled else { return }
+                // One change per batch: each change of `songs` updates the views.
+                songs = songs.map { song in
+                    var song = song
+                    if let page = pages[song.path] { song.bandcampPage = page }
+                    return song
+                }
             }
             scanStatus = nil
             save()
