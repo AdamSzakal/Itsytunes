@@ -37,6 +37,11 @@ enum MetadataReader {
                 }
             case .id3MetadataContentType, .iTunesMetadataUserGenre, .quickTimeMetadataGenre:
                 fill(&tags.genre, await item.string().map(genreName))
+            case .id3MetadataComments, .iTunesMetadataUserComment, .quickTimeMetadataComment:
+                // Bandcamp: "Visit https://artist.bandcamp.com"
+                if let s = await item.string(), let m = s.firstMatch(of: #/https?://[\w.-]+\.bandcamp\.com\S*/#) {
+                    fill(&tags.bandcampPage, String(m.output))
+                }
             case .id3MetadataTrackNumber:
                 // "3" or "3/12"
                 if tags.track == nil, let s = await item.string() {

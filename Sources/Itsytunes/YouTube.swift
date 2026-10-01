@@ -54,24 +54,27 @@ enum YouTube {
         let (data, response) = try await URLSession.shared.data(from: components.url!)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             let message = (try? JSONDecoder().decode(ErrorResponse.self, from: data))?.error.message
-            throw APIError(message: message.map(unescape) ?? "YouTube search failed.")
+            throw APIError(message: message?.htmlUnescaped ?? "YouTube search failed.")
         }
         return try JSONDecoder().decode(Response.self, from: data).items.compactMap { item in
             guard let id = item.id.videoId else { return nil }
             return YouTubeVideo(
                 id: id,
-                title: unescape(item.snippet.title),
-                channel: unescape(item.snippet.channelTitle),
+                title: item.snippet.title.htmlUnescaped,
+                channel: item.snippet.channelTitle.htmlUnescaped,
                 published: String(item.snippet.publishedAt.prefix(4)),
                 thumbnail: item.snippet.thumbnails.medium?.url
             )
         }
     }
+}
 
-    /// The API returns titles HTML-escaped ("Rock &amp; Roll", "Don&#39;t").
-    private static func unescape(_ s: String) -> String {
-        [("&amp;", "&"), ("&quot;", "\""), ("&#39;", "'"), ("&lt;", "<"), ("&gt;", ">")]
-            .reduce(s) { $0.replacingOccurrences(of: $1.0, with: $1.1) }
+extension String {
+    /// "Rock &amp; Roll" -> "Rock & Roll". YouTube titles and Bandcamp page data come HTML-escaped.
+    /// "&amp;" goes last, so "&amp;quot;" becomes "&quot;" and not a quote.
+    var htmlUnescaped: String {
+        [("&quot;", "\""), ("&#39;", "'"), ("&lt;", "<"), ("&gt;", ">"), ("&amp;", "&")]
+            .reduce(self) { $0.replacingOccurrences(of: $1.0, with: $1.1) }
     }
 }
 

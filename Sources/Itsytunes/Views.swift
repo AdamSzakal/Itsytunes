@@ -4,6 +4,7 @@ struct ContentView: View {
     @Environment(Library.self) private var library
     @Environment(Player.self) private var player
     @Environment(Downloader.self) private var downloader
+    @Environment(BandcampSync.self) private var bandcampSync
     @State private var selection: Set<Song.ID> = []
     /// Downloaded songs to show once the library has scanned them.
     @State private var pendingReveal: Set<Song.ID> = []
@@ -84,6 +85,10 @@ struct ContentView: View {
             pendingReveal = Set(downloader.added.map(\.path))
             revealDownload()
         }
+        .onChange(of: bandcampSync.added) {
+            pendingReveal = Set(bandcampSync.added.map(\.standardizedFileURL.path))
+            revealDownload()
+        }
         .onChange(of: library.scanStatus) { revealDownload() }
         // An empty title keeps the toolbar's flexible gap, which pushes the primary items to the right.
         // (Removing the title removes the gap too.) The Window menu uses the scene's name, "Itsytunes".
@@ -111,7 +116,10 @@ struct ContentView: View {
                         }
                         .help("\(library.noisyTitles.count) titles have upload noise, like video IDs or track numbers")
                     }
-                    if let status = library.scanStatus {
+                    // A sync adds files, so the library scans all the time: the sync's progress says more.
+                    if let status = bandcampSync.status {
+                        StatusPill(text: status, job: .bandcamp)
+                    } else if let status = library.scanStatus {
                         StatusPill(text: status, job: .scanning)
                     } else if let status = library.tagStatus {
                         StatusPill(text: status, job: .tagging)
@@ -189,10 +197,13 @@ struct ContentView: View {
             .width(24)
             .customizationID("art")
             TableColumn("Title", value: \Song.displayTitle) { song in
-                Text(song.displayTitle)
-                    .font(.system(size: 12))
-                    // Bold, not colored: a color would clash with the blue selection.
-                    .fontWeight(player.current?.id == song.id ? .semibold : .regular)
+                HStack(spacing: 6) {
+                    Text(song.displayTitle)
+                        .font(.system(size: 12))
+                        // Bold, not colored: a color would clash with the blue selection.
+                        .fontWeight(player.current?.id == song.id ? .semibold : .regular)
+                    if let page = song.bandcampLink { BandcampMark(page: page) }
+                }
             }
             .width(min: 120, ideal: 300)
             .customizationID("title")
@@ -432,13 +443,14 @@ private struct IconButton: View {
 private struct StatusPill: View {
     /// One color per job, so it is clear what is running.
     enum Job {
-        case scanning, tagging, renaming
+        case scanning, tagging, renaming, bandcamp
 
         var color: Color {
             switch self {
             case .scanning: .blue
             case .tagging: .purple
             case .renaming: .orange
+            case .bandcamp: .teal
             }
         }
     }
@@ -546,6 +558,32 @@ private struct ArtworkViewer: View {
             if let data = await MetadataReader.read(song.url).artwork, let full = NSImage(data: data),
                full.size.width > (image?.size.width ?? 0) {
                 image = full
+            }
+        }
+    }
+}
+
+/// Bandcamp's mark, for songs bought there. Click to open the artist's Bandcamp page.
+struct BandcampMark: View {
+    let page: URL
+
+    var body: some View {
+        Button { NSWorkspace.shared.open(page) } label: {
+            Slant().fill(Color(red: 0.11, green: 0.63, blue: 0.76)).frame(width: 12, height: 7)
+        }
+        .buttonStyle(.plain)
+        .help("From Bandcamp. Click to open \(page.host() ?? page.absoluteString)")
+    }
+
+    /// The slanted bar of Bandcamp's logo.
+    private struct Slant: Shape {
+        func path(in r: CGRect) -> Path {
+            Path { p in
+                p.move(to: CGPoint(x: r.minX, y: r.maxY))
+                p.addLine(to: CGPoint(x: r.minX + r.width * 0.3, y: r.minY))
+                p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
+                p.addLine(to: CGPoint(x: r.maxX - r.width * 0.3, y: r.maxY))
+                p.closeSubpath()
             }
         }
     }
