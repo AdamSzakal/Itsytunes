@@ -3,7 +3,12 @@ import SwiftUI
 struct ContentView: View {
     @Environment(Library.self) private var library
     @Environment(Player.self) private var player
+    @Environment(Downloader.self) private var downloader
     @State private var selection: Set<Song.ID> = []
+    /// Downloaded songs to show once the library has scanned them.
+    @State private var pendingReveal: Set<Song.ID> = []
+    /// Song to scroll to in the table or album list.
+    @State private var scrollTarget: Song.ID?
     @State private var fixing: FixRequest?
     @AppStorage("libraryLayout") private var layout = LibraryLayout.songs
     @State private var search = ""
@@ -56,9 +61,9 @@ struct ContentView: View {
             } else if !search.isEmpty && matches.isEmpty {
                 ContentUnavailableView.search(text: search)
             } else if layout == .albums {
-                AlbumListView(songs: matches, showArtwork: { viewingArtwork = $0 }) { fixing = FixRequest(songs: $0, online: $1) }
+                AlbumListView(songs: matches, scrollTarget: $scrollTarget, showArtwork: { viewingArtwork = $0 }) { fixing = FixRequest(songs: $0, online: $1) }
             } else {
-                table
+                ScrollViewReader { table($0) }
             }
             }
             // Always fill the space: the empty states only take their own height, which moved the player bar up.
@@ -75,6 +80,11 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.15), value: viewingArtwork?.id)
         .onAppear { player.library = { [library] in library.songs } }
+        .onChange(of: downloader.added) {
+            pendingReveal = Set(downloader.added.map(\.path))
+            revealDownload()
+        }
+        .onChange(of: library.scanStatus) { revealDownload() }
         // An empty title keeps the toolbar's flexible gap, which pushes the primary items to the right.
         // (Removing the title removes the gap too.) The Window menu uses the scene's name, "Itsytunes".
         .navigationTitle("")
@@ -134,13 +144,23 @@ struct ContentView: View {
         }
     }
 
+    /// Selects the downloaded songs and scrolls to them, once a scan has added all of them.
+    private func revealDownload() {
+        guard !pendingReveal.isEmpty, library.scanStatus == nil,
+              pendingReveal.isSubset(of: Set(library.songs.map(\.id))) else { return }
+        search = "" // a search could hide the new songs
+        selection = pendingReveal
+        scrollTarget = rows.first { pendingReveal.contains($0.id) }?.id
+        pendingReveal = []
+    }
+
     /// "Artist Title" of the selected song, else of the playing one.
     private var youTubeQuery: String {
         guard let song = library.songs.first(where: { selection.contains($0.id) }) ?? player.current else { return "" }
         return [song.artist, song.displayTitle].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
-    private var table: some View {
+    private func table(_ scroller: ScrollViewProxy) -> some View {
         let rows = rows
         let rowNumbers = Dictionary(rows.enumerated().map { ($1.id, $0 + 1) }, uniquingKeysWith: { a, _ in a })
         // First of the given songs in table order.
@@ -233,6 +253,14 @@ struct ContentView: View {
                 player.toggle()
             }
             return .handled
+        }
+        // A task, not onChange: the table may appear with the target already set (after a search is cleared).
+        .task(id: scrollTarget) {
+            guard let target = scrollTarget else { return }
+            // Wait for the list to lay out the new songs: scrolling in the same update does nothing.
+            try? await Task.sleep(for: .milliseconds(150))
+            scroller.scrollTo(target, anchor: .center)
+            scrollTarget = nil
         }
     }
 }

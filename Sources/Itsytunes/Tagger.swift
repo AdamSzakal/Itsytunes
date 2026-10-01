@@ -125,8 +125,18 @@ actor OnlineLookup {
         var artworkURL: URL?
     }
 
+    /// One song of an album's track list.
+    struct AlbumTrack {
+        let number: Int
+        let title: String
+        let duration: Double
+    }
+
     private struct Response: Decodable { let results: [Item] }
     private struct Item: Decodable {
+        let wrapperType: String?
+        let collectionId: Int?
+        let trackTimeMillis: Double?
         let trackName: String?
         let artistName: String?
         let collectionName: String?
@@ -138,12 +148,15 @@ actor OnlineLookup {
 
     private var lastRequest = Date.distantPast
 
-    func find(title: String, artist: String, album: String) async throws -> Match? {
-        // The API allows about 20 requests per minute.
+    /// The API allows about 20 requests per minute.
+    private func throttle() async throws {
         let wait = 3 - Date().timeIntervalSince(lastRequest)
         if wait > 0 { try await Task.sleep(for: .seconds(wait)) }
         lastRequest = Date()
+    }
 
+    func find(title: String, artist: String, album: String) async throws -> Match? {
+        try await throttle()
         var components = URLComponents(string: "https://itunes.apple.com/search")!
         components.queryItems = [
             URLQueryItem(name: "term", value: "\(artist) \(title)"),
@@ -175,6 +188,51 @@ actor OnlineLookup {
             track: best.trackNumber,
             artworkURL: best.artworkUrl100.flatMap { URL(string: $0.replacingOccurrences(of: "100x100bb", with: "600x600bb")) }
         )
+    }
+
+    /// The album and its songs in track order, for splitting a full-album upload. Two requests: find the
+    /// album, then list its songs. Nil if no album has this exact name by this artist.
+    func album(_ name: String, artist: String) async throws -> (match: Match, tracks: [AlbumTrack])? {
+        let n = Self.normalize(name), a = Self.normalize(artist)
+        guard !n.isEmpty, !a.isEmpty else { return nil }
+        try await throttle()
+        var search = URLComponents(string: "https://itunes.apple.com/search")!
+        search.queryItems = [
+            URLQueryItem(name: "term", value: "\(artist) \(name)"),
+            URLQueryItem(name: "media", value: "music"),
+            URLQueryItem(name: "entity", value: "album"),
+            URLQueryItem(name: "limit", value: "10"),
+        ]
+        let albums = try await results(search.url!)
+        guard let found = albums.first(where: { item in
+            let ia = Self.normalize(item.artistName ?? "")
+            return Self.normalize(item.collectionName ?? "") == n && !ia.isEmpty && (ia.contains(a) || a.contains(ia))
+        }), let id = found.collectionId else { return nil }
+
+        try await throttle()
+        var lookup = URLComponents(string: "https://itunes.apple.com/lookup")!
+        lookup.queryItems = [URLQueryItem(name: "id", value: String(id)), URLQueryItem(name: "entity", value: "song")]
+        let tracks = try await results(lookup.url!)
+            .filter { $0.wrapperType == "track" }
+            .compactMap { item -> AlbumTrack? in
+                guard let number = item.trackNumber, let title = item.trackName, let ms = item.trackTimeMillis else { return nil }
+                return AlbumTrack(number: number, title: title, duration: ms / 1000)
+            }
+            .sorted { $0.number < $1.number }
+        let match = Match(
+            artist: found.artistName ?? "",
+            album: found.collectionName ?? "",
+            year: String((found.releaseDate ?? "").prefix(4)),
+            genre: found.primaryGenreName ?? "",
+            artworkURL: found.artworkUrl100.flatMap { URL(string: $0.replacingOccurrences(of: "100x100bb", with: "600x600bb")) }
+        )
+        return (match, tracks)
+    }
+
+    private func results(_ url: URL) async throws -> [Item] {
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        return try JSONDecoder().decode(Response.self, from: data).results
     }
 
     func download(_ url: URL) async throws -> Data {
