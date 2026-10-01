@@ -10,7 +10,8 @@ Work in progress. Try it: download `Itsytunes.zip` from [Releases](https://githu
 
 **Library**
 - Plays every song in one folder and its subfolders. Works with Dropbox and iCloud folders; files that are only online are skipped unless you turn them on in Settings.
-- Two views: a song list with columns you can sort, move and hide, or albums with their covers.
+- Three views: a song list with columns you can sort, move and hide, albums with their covers, or artists with their albums. A compilation stays one album.
+- Filter to show only songs from Bandcamp, songs downloaded on this Mac, or songs that are only online in Dropbox.
 - Search with ⌘F. Click a cover to see it full size.
 
 **Tags**

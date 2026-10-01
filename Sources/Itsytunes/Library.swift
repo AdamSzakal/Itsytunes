@@ -20,6 +20,8 @@ final class Library {
     @ObservationIgnored private var noisyTask: Task<Void, Never>?
     /// "path|title" of titles the user reviewed and left unchanged.
     @ObservationIgnored private var keptTitles = Set(UserDefaults.standard.stringArray(forKey: "keptTitles") ?? [])
+    /// Paths of songs that are only online (Dropbox, iCloud), from the last scan.
+    private(set) var onlineOnly: Set<String> = []
     private(set) var scanStatus: String?
     private(set) var tagStatus: String?
     /// Off by default: reading an online-only file (Dropbox, iCloud) makes the provider download it.
@@ -91,6 +93,7 @@ final class Library {
                 Self.audioFiles(in: folder, includeOnlineOnly: includeOnlineOnly)
             }.value
             guard !Task.isCancelled else { return }
+            onlineOnly = Set(files.filter(\.online).map(\.url.path))
 
             // Reuse cached songs whose file did not change; read tags of the rest.
             let known = Dictionary(songs.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
@@ -103,7 +106,7 @@ final class Library {
                     fresh.append(song)
                     if song.bandcampPage == nil { unchecked.append(song) }
                 } else {
-                    changed.append(file)
+                    changed.append((file.url, file.modified))
                 }
             }
             songs = fresh
@@ -243,17 +246,18 @@ final class Library {
         try? JSONEncoder().encode(songs).write(to: Self.cacheFile, options: .atomic)
     }
 
-    nonisolated private static func audioFiles(in folder: URL, includeOnlineOnly: Bool) -> [(url: URL, modified: Date)] {
+    nonisolated private static func audioFiles(in folder: URL, includeOnlineOnly: Bool) -> [(url: URL, modified: Date, online: Bool)] {
         let keys: Set<URLResourceKey> = [.contentModificationDateKey, .isRegularFileKey, .ubiquitousItemDownloadingStatusKey]
         guard let enumerator = FileManager.default.enumerator(
             at: folder, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else { return [] }
-        var files: [(url: URL, modified: Date)] = []
+        var files: [(url: URL, modified: Date, online: Bool)] = []
         for case let url as URL in enumerator where audioExtensions.contains(url.pathExtension.lowercased()) {
             guard let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
             // Local files have no downloading status.
-            if !includeOnlineOnly, values.ubiquitousItemDownloadingStatus == .notDownloaded { continue }
-            files.append((url.standardizedFileURL, values.contentModificationDate ?? .distantPast))
+            let online = values.ubiquitousItemDownloadingStatus == .notDownloaded
+            if !includeOnlineOnly, online { continue }
+            files.append((url.standardizedFileURL, values.contentModificationDate ?? .distantPast, online))
         }
         return files
     }

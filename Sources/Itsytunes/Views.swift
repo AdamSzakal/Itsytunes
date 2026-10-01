@@ -13,6 +13,8 @@ struct ContentView: View {
     @State private var fixing: FixRequest?
     @AppStorage("libraryLayout") private var layout = LibraryLayout.songs
     @State private var search = ""
+    /// Not saved: a filter left on from an earlier session would hide songs without notice.
+    @State private var source = SongSource.all
     @State private var showYouTube = false
     @State private var viewingArtwork: Song?
     /// Column order, widths and visibility, saved across launches.
@@ -25,11 +27,14 @@ struct ContentView: View {
         KeyPathComparator(\Song.artist), KeyPathComparator(\Song.album), KeyPathComparator(\Song.trackSort),
     ]
 
-    /// Songs matching the search, in library order.
+    /// Songs matching the filter and the search, in library order.
     private var matches: [Song] {
         let query = search.trimmingCharacters(in: .whitespaces)
-        return query.isEmpty ? library.songs : library.songs.filter { song in
-            [song.displayTitle, song.artist, song.album, song.genre].contains { $0.localizedCaseInsensitiveContains(query) }
+        guard !query.isEmpty || source != .all else { return library.songs }
+        let onlineOnly = library.onlineOnly
+        return library.songs.filter { song in
+            source.includes(song, onlineOnly: onlineOnly) && (query.isEmpty
+                || [song.displayTitle, song.artist, song.album, song.genre].contains { $0.localizedCaseInsensitiveContains(query) })
         }
     }
 
@@ -61,6 +66,18 @@ struct ContentView: View {
                 }
             } else if !search.isEmpty && matches.isEmpty {
                 ContentUnavailableView.search(text: search)
+            } else if matches.isEmpty && source != .all {
+                ContentUnavailableView {
+                    Label("No Songs", systemImage: "line.3.horizontal.decrease.circle")
+                } description: {
+                    Text(source == .onlineOnly && !library.includeOnlineOnly
+                         ? "Online-only files are skipped. Include them in Settings."
+                         : "No songs match \"\(source.label)\".")
+                } actions: {
+                    Button("Show All Songs") { source = .all }
+                }
+            } else if layout == .artists {
+                ArtistListView(songs: matches, scrollTarget: $scrollTarget, showArtwork: { viewingArtwork = $0 }) { fixing = FixRequest(songs: $0, online: $1) }
             } else if layout == .albums {
                 AlbumListView(songs: matches, scrollTarget: $scrollTarget, showArtwork: { viewingArtwork = $0 }) { fixing = FixRequest(songs: $0, online: $1) }
             } else {
@@ -130,12 +147,26 @@ struct ContentView: View {
             }
             // Right side, next to the search field, so the changing items on the left don't move them.
             ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Picker("Show", selection: $source) {
+                        ForEach(SongSource.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    // Filled while a filter is on, so hidden songs are not a surprise.
+                    Label("Filter", systemImage: source == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                }
+                .menuIndicator(.hidden)
+                .help(source == .all ? "Show only some songs" : "Showing: \(source.label)")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Picker("View", selection: $layout) {
                     Label("Songs", systemImage: "list.bullet").tag(LibraryLayout.songs)
                     Label("Albums", systemImage: "square.stack").tag(LibraryLayout.albums)
+                    Label("Artists", systemImage: "music.mic").tag(LibraryLayout.artists)
                 }
                 .pickerStyle(.segmented)
-                .help("Show songs as a list or grouped by album")
+                .help("Show songs as a list, or grouped by album or artist")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { showYouTube = true } label: { Label("Search YouTube", systemImage: "play.rectangle") }
