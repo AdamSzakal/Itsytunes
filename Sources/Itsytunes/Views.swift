@@ -5,17 +5,23 @@ struct ContentView: View {
     @Environment(Player.self) private var player
     @Environment(Downloader.self) private var downloader
     @Environment(BandcampSync.self) private var bandcampSync
+    /// Selected songs. In the album and artist lists, it can instead hold the ID of the selected album or artist,
+    /// which the song table ignores.
     @State private var selection: Set<Song.ID> = []
     /// Downloaded songs to show once the library has scanned them.
     @State private var pendingReveal: Set<Song.ID> = []
-    /// Song to scroll to in the table or album list.
-    @State private var scrollTarget: Song.ID?
-    @State private var fixing: FixRequest?
+    /// Song, album or artist to scroll to in the table or the album and artist lists.
+    @State private var scrollTarget: ScrollTarget?
+    /// Albums and artists shown without their songs, in the album and artist views.
+    @State private var collapsed: Set<String> = []
+    @State private var tagRequest: TagRequest?
     @AppStorage("libraryLayout") private var layout = LibraryLayout.songs
     @State private var search = ""
     /// Not saved: a filter left on from an earlier session would hide songs without notice.
-    @State private var source = SongSource.all
+    @State private var filter = SongFilter()
+    @State private var showFilters = false
     @State private var showYouTube = false
+    @State private var showQuickSearch = false
     @State private var viewingArtwork: Song?
     /// Column order, widths and visibility, saved across launches.
     /// v2: layouts saved before the row-number column existed put it last, so they are dropped once.
@@ -30,10 +36,10 @@ struct ContentView: View {
     /// Songs matching the filter and the search, in library order.
     private var matches: [Song] {
         let query = search.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty || source != .all else { return library.songs }
+        guard !query.isEmpty || filter.isActive else { return library.songs }
         let onlineOnly = library.onlineOnly
         return library.songs.filter { song in
-            source.includes(song, onlineOnly: onlineOnly) && (query.isEmpty
+            filter.includes(song, onlineOnly: onlineOnly) && (query.isEmpty
                 || [song.displayTitle, song.artist, song.album, song.genre].contains { $0.localizedCaseInsensitiveContains(query) })
         }
     }
@@ -55,6 +61,10 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if showFilters {
+                FilterBar(filter: $filter, songs: library.songs, onlineOnly: library.onlineOnly)
+                Divider()
+            }
             Group {
             if library.folder == nil {
                 ContentUnavailableView {
@@ -66,22 +76,27 @@ struct ContentView: View {
                 }
             } else if !search.isEmpty && matches.isEmpty {
                 ContentUnavailableView.search(text: search)
-            } else if matches.isEmpty && source != .all {
+            } else if matches.isEmpty && filter.isActive {
                 ContentUnavailableView {
                     Label("No Songs", systemImage: "line.3.horizontal.decrease.circle")
                 } description: {
-                    Text(source == .onlineOnly && !library.includeOnlineOnly
+                    Text(filter.source == .onlineOnly && !library.includeOnlineOnly
                          ? "Online-only files are skipped. Include them in Settings."
-                         : "No songs match \"\(source.label)\".")
+                         : "No songs match the filters.")
                 } actions: {
-                    Button("Show All Songs") { source = .all }
+                    Button("Clear Filters") { filter = SongFilter() }
                 }
-            } else if layout == .artists {
-                ArtistListView(songs: matches, scrollTarget: $scrollTarget, showArtwork: { viewingArtwork = $0 }) { fixing = FixRequest(songs: $0, online: $1) }
-            } else if layout == .albums {
-                AlbumListView(songs: matches, scrollTarget: $scrollTarget, showArtwork: { viewingArtwork = $0 }) { fixing = FixRequest(songs: $0, online: $1) }
-            } else {
+            } else if layout == .songs {
                 ScrollViewReader { table($0) }
+            } else {
+                Group {
+                    if layout == .artists {
+                        ArtistListView(songs: matches, selection: $selection, scrollTarget: $scrollTarget, collapsed: $collapsed, showArtwork: { viewingArtwork = $0 }) { tagRequest = TagRequest(songs: $0, action: $1) }
+                    } else {
+                        AlbumListView(songs: matches, selection: $selection, scrollTarget: $scrollTarget, collapsed: $collapsed, showArtwork: { viewingArtwork = $0 }) { tagRequest = TagRequest(songs: $0, action: $1) }
+                    }
+                }
+                .overlay(alignment: .topTrailing) { collapseAllButton }
             }
             }
             // Always fill the space: the empty states only take their own height, which moved the player bar up.
@@ -94,9 +109,13 @@ struct ContentView: View {
             if let song = viewingArtwork {
                 ArtworkViewer(song: song) { viewingArtwork = nil }
                     .transition(.opacity)
+            } else if showQuickSearch {
+                QuickSearch(songs: library.songs, root: library.folder?.path, onSelect: reveal) { showQuickSearch = false }
+                    .transition(.opacity)
             }
         }
         .animation(.easeOut(duration: 0.15), value: viewingArtwork?.id)
+        .animation(.easeOut(duration: 0.1), value: showQuickSearch)
         .onAppear { player.library = { [library] in library.songs } }
         .onChange(of: downloader.added) {
             pendingReveal = Set(downloader.added.map(\.path))
@@ -110,7 +129,6 @@ struct ContentView: View {
         // An empty title keeps the toolbar's flexible gap, which pushes the primary items to the right.
         // (Removing the title removes the gap too.) The Window menu uses the scene's name, "Itsytunes".
         .navigationTitle("")
-        .searchable(text: $search, placement: .toolbar, prompt: "Search  ⌘F")
         .toolbar {
             // Where the title was: the library folder, click to change it.
             ToolbarItem(placement: .navigation) {
@@ -118,7 +136,7 @@ struct ContentView: View {
                     Label(folderLabel, systemImage: "folder")
                         .labelStyle(.titleAndIcon)
                 }
-                .help(folderHelp)
+                .tooltip(folderHelp)
             }
             // Clean-up button and job chip share one fixed-width slot, lined up from the left: a slot's
             // content is centered by macOS, and a width that follows the text would move the right side.
@@ -127,11 +145,11 @@ struct ContentView: View {
                     if let write = library.tagWrite {
                         StatusPill(text: "\(write.verb) \(write.done) of \(write.total) tags", job: .renaming)
                     } else if !library.noisyTitles.isEmpty {
-                        Button { fixing = FixRequest(songs: library.noisyTitles, online: false) } label: {
+                        Button { tagRequest = TagRequest(songs: library.noisyTitles, action: .cleanUp) } label: {
                             Label("Clean up \(library.noisyTitles.count) tags", systemImage: "wand.and.stars")
                                 .labelStyle(.titleAndIcon)
                         }
-                        .help("\(library.noisyTitles.count) titles have upload noise, like video IDs or track numbers")
+                        .tooltip("\(library.noisyTitles.count) titles have upload noise, like video IDs or track numbers")
                     }
                     // A sync adds files, so the library scans all the time: the sync's progress says more.
                     if let status = bandcampSync.status {
@@ -145,20 +163,7 @@ struct ContentView: View {
                 }
                 .frame(width: 340, alignment: .leading)
             }
-            // Right side, next to the search field, so the changing items on the left don't move them.
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Picker("Show", selection: $source) {
-                        ForEach(SongSource.allCases) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    // Filled while a filter is on, so hidden songs are not a surprise.
-                    Label("Filter", systemImage: source == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
-                }
-                .menuIndicator(.hidden)
-                .help(source == .all ? "Show only some songs" : "Showing: \(source.label)")
-            }
+            // Right side, so the changing items on the left don't move them.
             ToolbarItem(placement: .primaryAction) {
                 Picker("View", selection: $layout) {
                     Label("Songs", systemImage: "list.bullet").tag(LibraryLayout.songs)
@@ -166,20 +171,46 @@ struct ContentView: View {
                     Label("Artists", systemImage: "music.mic").tag(LibraryLayout.artists)
                 }
                 .pickerStyle(.segmented)
-                .help("Show songs as a list, or grouped by album or artist")
+                .tooltip(segments: ["Songs", "Albums", "Artists"])
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { showYouTube = true } label: { Label("Search YouTube", systemImage: "play.rectangle") }
-                    .keyboardShortcut("k")
-                    .help("Search YouTube (⌘K)")
+                    .keyboardShortcut("y")
+                    .tooltip("Search YouTube  ⌘Y")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                LibrarySearchField(text: $search, prompt: "Search  ⌘F").frame(width: 200)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    // Closing the bar clears the filters, so no song stays hidden without the bar showing why.
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        showFilters.toggle()
+                        if !showFilters { filter = SongFilter() }
+                    }
+                } label: {
+                    // Filled while a filter is on, so hidden songs are not a surprise.
+                    Label("Filter", systemImage: filter.isActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                }
+                .keyboardShortcut("f", modifiers: [.command, .option])
+                .tooltip(showFilters ? "Close the filters and show all songs  ⌥⌘F" : "Filter by source, artist or album  ⌥⌘F")
             }
         }
         .sheet(isPresented: $showYouTube) {
             YouTubeSheet(query: youTubeQuery)
         }
-        .sheet(item: $fixing) { FixTagsSheet(songs: $0.songs, online: $0.online) }
+        .sheet(item: $tagRequest) { request in
+            if request.action == .edit {
+                TagEditorSheet(songs: request.songs)
+            } else {
+                FixTagsSheet(songs: request.songs, online: request.action == .fixOnline)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .cleanUpAllTitles)) { _ in
-            fixing = FixRequest(songs: library.songs, online: false)
+            tagRequest = TagRequest(songs: library.songs, action: .cleanUp)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleQuickSearch)) { _ in
+            if library.folder != nil { showQuickSearch.toggle() }
         }
     }
 
@@ -189,8 +220,78 @@ struct ContentView: View {
               pendingReveal.isSubset(of: Set(library.songs.map(\.id))) else { return }
         search = "" // a search could hide the new songs
         selection = pendingReveal
-        scrollTarget = rows.first { pendingReveal.contains($0.id) }?.id
+        scrollTarget = rows.first { pendingReveal.contains($0.id) }.map { ScrollTarget(id: $0.id) }
         pendingReveal = []
+    }
+
+    /// Floats over the album and artist lists. Once anything is folded, it unfolds everything; then it folds everything.
+    private var collapseAllButton: some View {
+        Button(action: toggleAllGroups) {
+            Image(systemName: collapsed.isEmpty ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
+                .font(.system(size: 13))
+                .frame(width: 30, height: 30)
+                .background(.regularMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(.separator))
+                .shadow(color: .black.opacity(0.15), radius: 3, y: 1)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(collapsed.isEmpty ? "Hide the songs of every \(layout == .albums ? "album" : "artist")" : "Show all songs")
+        .padding(.top, 10)
+        .padding(.trailing, 18) // clear of the scroll bar
+    }
+
+    /// Goes to a quick search result in the current layout and selects it. A picked album or artist goes to the
+    /// top of the list, selected as one row, so Return plays it. In the song table, that is its first song.
+    private func reveal(_ result: QuickSearchResult) {
+        showQuickSearch = false
+        let songs = result.songs
+        // The search or a filter could hide the songs.
+        search = ""
+        if songs.contains(where: { !filter.includes($0, onlineOnly: library.onlineOnly) }) { filter = SongFilter() }
+        let root = library.folder?.path
+        let first = songs[0].id
+        let id: String?
+        switch (layout, result) {
+        case (_, .song(let song)):
+            id = song.id
+        case (.songs, _):
+            let ids = Set(songs.map(\.id))
+            id = rows.first { ids.contains($0.id) }?.id
+        case (.albums, .artist(let artist)):
+            // The artist's first album as listed, not a compilation the artist is also on.
+            let albums = AlbumListView.albums(of: matches, root: root)
+            id = (albums.first { $0.artist.caseInsensitiveCompare(artist.name) == .orderedSame }
+                ?? albums.first { $0.tracks.contains { $0.id == first } })?.id
+        case (.albums, .album):
+            id = AlbumListView.albums(of: matches, root: root).first { $0.tracks.contains { $0.id == first } }?.id
+        case (.artists, .artist):
+            id = ArtistListView.artists(of: matches, root: root).first { $0.albums.contains { $0.tracks.contains { $0.id == first } } }?.id
+        case (.artists, .album):
+            let artists = ArtistListView.artists(of: matches, root: root)
+            id = artists.lazy.compactMap { artist in
+                artist.albums.first { $0.tracks.contains { $0.id == first } }.map { ArtistListView.albumID($0, of: artist) }
+            }.first
+        }
+        guard let id else { return }
+        selection = [id]
+        if case .song = result {
+            scrollTarget = ScrollTarget(id: id)
+        } else {
+            scrollTarget = ScrollTarget(id: id, anchor: .top)
+        }
+    }
+
+    private func toggleAllGroups() {
+        withAnimation(.easeOut(duration: 0.15)) {
+            if !collapsed.isEmpty {
+                collapsed = []
+            } else {
+                let root = library.folder?.path
+                collapsed = Set(layout == .albums ? AlbumListView.albums(of: matches, root: root).map(\.id)
+                                                  : ArtistListView.artists(of: matches, root: root).map(\.id))
+            }
+        }
     }
 
     /// "Artist Title" of the selected song, else of the playing one.
@@ -278,15 +379,28 @@ struct ContentView: View {
                 Button("Play") { player.play(item, queue: rows) }
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(items.map(\.url)) }
                 Divider()
+                Button(items.count == 1 ? "Edit Tags…" : "Edit Tags of \(items.count) Songs…") {
+                    tagRequest = TagRequest(songs: items, action: .edit)
+                }
+                .keyboardShortcut("i")
                 Button(items.count == 1 ? "Fix Tags…" : "Fix Tags of \(items.count) Songs…") {
-                    fixing = FixRequest(songs: items, online: true)
+                    tagRequest = TagRequest(songs: items, action: .fixOnline)
                 }
                 Button(items.count == 1 ? "Clean Up Title…" : "Clean Up \(items.count) Titles…") {
-                    fixing = FixRequest(songs: items, online: false)
+                    tagRequest = TagRequest(songs: items, action: .cleanUp)
                 }
             }
         } primaryAction: { ids in
             if let item = firstSong(ids) { player.play(item, queue: rows) }
+        }
+        .background {
+            // Invisible button, so ⌘I edits the selected songs (a context menu's shortcut only shows the key).
+            Button("Edit Tags") {
+                let items = rows.filter { selection.contains($0.id) }
+                if !items.isEmpty { tagRequest = TagRequest(songs: items, action: .edit) }
+            }
+            .keyboardShortcut("i")
+            .opacity(0)
         }
         .onKeyPress(.space) {
             if player.current == nil, let item = firstSong(selection) {
@@ -301,22 +415,36 @@ struct ContentView: View {
             guard let target = scrollTarget else { return }
             // Wait for the list to lay out the new songs: scrolling in the same update does nothing.
             try? await Task.sleep(for: .milliseconds(150))
-            scroller.scrollTo(target, anchor: .center)
+            scroller.scrollTo(target.id, anchor: target.anchor)
             scrollTarget = nil
         }
     }
 }
 
-/// Songs to review in `FixTagsSheet`, with or without an online lookup.
-struct FixRequest: Identifiable {
+/// What to do with the tags of some songs.
+enum TagAction {
+    /// Change tags by hand in `TagEditorSheet`.
+    case edit
+    /// Review tags found online in `FixTagsSheet`.
+    case fixOnline
+    /// Review cleaned-up titles in `FixTagsSheet`.
+    case cleanUp
+}
+
+/// Songs to edit or review, for the tag sheets.
+struct TagRequest: Identifiable {
     let id = UUID()
     let songs: [Song]
-    let online: Bool
+    let action: TagAction
 }
 
 extension Notification.Name {
     /// Sent by the File menu; the main window opens the title clean-up for the whole library.
     static let cleanUpAllTitles = Notification.Name("cleanUpAllTitles")
+    /// Sent by Edit > Find; the toolbar search field takes the keyboard focus.
+    static let focusLibrarySearch = Notification.Name("focusLibrarySearch")
+    /// Sent by Edit > Quick Search; the main window opens or closes the quick search.
+    static let toggleQuickSearch = Notification.Name("toggleQuickSearch")
 }
 
 struct PlayerBar: View {

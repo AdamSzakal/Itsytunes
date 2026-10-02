@@ -2,11 +2,18 @@ import Foundation
 
 /// Writes an ID3v2.4 tag to the start of an MP3 file.
 /// By default it only adds frames: a frame already in the file is never replaced or removed.
-/// `replacing: true` overwrites frames of the same kind; use it only on files Itsytunes created itself.
+/// `replacing: true` overwrites frames of the same kind; use it only on files Itsytunes created itself,
+/// or for changes the user made. `removing` drops frames by ID ("TALB"), for fields the user cleared.
 enum ID3Writer {
     struct UnsupportedTag: Error {}
 
-    static func write(_ tags: Tags, artwork: Data?, to url: URL, replacing: Bool = false) throws {
+    /// Frame IDs of the `Tags` fields, for `removing`.
+    static let frameIDs: [WritableKeyPath<Tags, String>: String] = [
+        \.title: "TIT2", \.artist: "TPE1", \.album: "TALB", \.albumArtist: "TPE2", \.year: "TDRC", \.genre: "TCON",
+    ]
+    static let trackFrameID = "TRCK"
+
+    static func write(_ tags: Tags, artwork: Data?, to url: URL, replacing: Bool = false, removing: Set<String> = []) throws {
         let file = [UInt8](try Data(contentsOf: url))
         var kept: [(id: String, body: [UInt8])] = []
         var audioStart = 0
@@ -29,6 +36,7 @@ enum ID3Writer {
         text("TIT2", tags.title)
         text("TPE1", tags.artist)
         text("TALB", tags.album)
+        text("TPE2", tags.albumArtist)
         text("TDRC", tags.year)
         text("TCON", tags.genre)
         text("TRCK", tags.track.map(String.init) ?? "")
@@ -45,7 +53,9 @@ enum ID3Writer {
             let existing = Set(kept.map(\.id))
             new.removeAll { existing.contains($0.id) }
         }
-        guard !new.isEmpty else { return }
+        let before = kept.count
+        kept.removeAll { removing.contains($0.id) }
+        guard !new.isEmpty || kept.count < before else { return }
         var body: [UInt8] = []
         for frame in kept + new {
             body += Array(frame.id.utf8) + syncsafeBytes(frame.body.count) + [0, 0] + frame.body

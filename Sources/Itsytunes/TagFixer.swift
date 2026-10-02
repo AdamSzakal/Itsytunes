@@ -5,6 +5,10 @@ struct TagProposal: Identifiable {
     let song: Song
     let tags: Tags
     let artworkURL: URL?
+    /// A cover chosen by the user, used instead of `artworkURL`.
+    var artwork: Data?
+    /// ID3 frames to remove: fields the user cleared in the tag editor.
+    var removing: Set<String> = []
     var id: String { song.id }
 
     /// Fields that differ from the song's current tags.
@@ -79,8 +83,8 @@ enum TagFixer {
     /// Writes the proposal into the file (MP3) and returns the updated song.
     static func apply(_ proposal: TagProposal) async -> Song {
         var song = proposal.song
-        var artwork: Data?
-        if let url = proposal.artworkURL { artwork = try? await OnlineLookup.shared.download(url) }
+        var artwork = proposal.artwork
+        if artwork == nil, let url = proposal.artworkURL { artwork = try? await OnlineLookup.shared.download(url) }
         song.title = proposal.tags.title
         song.artist = proposal.tags.artist
         song.album = proposal.tags.album
@@ -89,7 +93,7 @@ enum TagFixer {
         song.track = proposal.tags.track
         if let artwork, let key = ArtworkStore.save(artwork) { song.artworkKey = key }
         if song.url.pathExtension.lowercased() == "mp3" {
-            try? ID3Writer.write(proposal.tags, artwork: artwork, to: song.url, replacing: true)
+            try? ID3Writer.write(proposal.tags, artwork: artwork, to: song.url, replacing: true, removing: proposal.removing)
             if let date = try? song.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate {
                 song.modified = date
             }

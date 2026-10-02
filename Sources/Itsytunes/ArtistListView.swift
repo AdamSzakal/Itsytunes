@@ -3,12 +3,17 @@ import SwiftUI
 /// All songs grouped by artist, then by album. Songs on a compilation are listed under their own artist.
 struct ArtistListView: View {
     @Environment(Library.self) private var library
+    @Environment(Player.self) private var player
     let songs: [Song]
-    /// Song whose artist to scroll to; cleared once done.
-    @Binding var scrollTarget: Song.ID?
+    /// Selected songs, shared with the song table, or the selected artist or album. The arrow keys move it.
+    @Binding var selection: Set<Song.ID>
+    /// Song, album or artist to scroll to; cleared once done.
+    @Binding var scrollTarget: ScrollTarget?
+    /// IDs of artists shown without their albums.
+    @Binding var collapsed: Set<String>
     let showArtwork: (Song) -> Void
-    /// Songs to review, and whether to look them up online (else only clean up titles).
-    let fixTags: ([Song], _ online: Bool) -> Void
+    /// Opens the tag editor, or the review of online fixes or title clean-ups, for some songs.
+    let tagAction: ([Song], TagAction) -> Void
 
     struct Artist: Identifiable {
         let id: String
@@ -17,9 +22,16 @@ struct ArtistListView: View {
         let albums: [AlbumListView.Album]
     }
 
-    private var artists: [Artist] {
-        let root = library.folder?.path
-        return Dictionary(grouping: songs) { $0.artist.lowercased() }
+    private var artists: [Artist] { grouping(songs, root: library.folder?.path, group: Self.artists) }
+    @State private var grouping = GroupingMemo<[Artist]>()
+
+    /// ID of an album header in the artist list. Album IDs alone can repeat: a compilation is listed under each of its artists.
+    static func albumID(_ album: AlbumListView.Album, of artist: Artist) -> String { "\(artist.id)|\(album.id)" }
+
+    /// `root`: the library folder (see `AlbumListView.albums`).
+    static func artists(of songs: [Song], root: String?) -> [Artist] {
+        // "artist:" keeps the IDs apart from album IDs, which share the set of collapsed groups.
+        Dictionary(grouping: songs) { "artist:" + $0.artist.lowercased() }
             .map { id, songs in
                 let albums = AlbumListView.albums(of: songs, root: root).sorted { a, b in
                     a.year != b.year ? a.year < b.year : a.name.localizedStandardCompare(b.name) == .orderedAscending
@@ -33,23 +45,38 @@ struct ArtistListView: View {
         let artists = artists
         // Playback continues from one artist into the next, in the order shown.
         let queue = artists.flatMap { $0.albums.flatMap(\.tracks) }
+        let rows = artists.flatMap { artist in
+            [ListRow(id: artist.id, first: artist.albums[0].tracks[0], group: artist.id)]
+                + (collapsed.contains(artist.id) ? [] : artist.albums.flatMap { album in
+                    [ListRow(id: Self.albumID(album, of: artist), first: album.tracks[0], group: artist.id)]
+                        + album.tracks.map { ListRow(song: $0, group: artist.id) }
+                })
+        }
+        // One highlighted row, even when the song table left several songs selected.
+        let selected = rows.first { selection.contains($0.id) }?.id
         ScrollViewReader { scroller in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(artists) { artist in
-                        ArtistSection(artist: artist, queue: queue, showArtwork: showArtwork, fixTags: fixTags)
+                        ArtistSection(artist: artist, queue: queue, collapsed: collapsed.contains(artist.id),
+                                      selected: selected, select: { selection = [$0] },
+                                      showArtwork: showArtwork, tagAction: tagAction) { all in
+                            collapsed.toggle(artist.id, all: all ? artists.map(\.id) : nil)
+                        }
                         Divider().padding(.leading, 20)
                     }
                 }
                 .padding(.vertical, 4)
             }
+            .listKeyNavigation(rows, selection: $selection, collapsed: $collapsed, scroller: scroller) { player.play($0, queue: queue) }
             .task(id: scrollTarget) {
                 guard let target = scrollTarget else { return }
-                // Wait for the list to lay out the new songs: scrolling in the same update does nothing.
-                try? await Task.sleep(for: .milliseconds(150))
-                if let artist = artists.first(where: { $0.albums.contains { $0.tracks.contains { $0.id == target } } }) {
-                    scroller.scrollTo(artist.id, anchor: .top)
+                let artist = artists.first { artist in
+                    artist.id == target.id || artist.albums.contains {
+                        Self.albumID($0, of: artist) == target.id || $0.tracks.contains { $0.id == target.id }
+                    }
                 }
+                if let artist { await target.scroll(in: artist.id, collapsed: $collapsed, scroller: scroller) }
                 scrollTarget = nil
             }
         }
@@ -59,8 +86,14 @@ struct ArtistListView: View {
 private struct ArtistSection: View {
     let artist: ArtistListView.Artist
     let queue: [Song]
+    let collapsed: Bool
+    /// ID of the highlighted row in the list.
+    let selected: String?
+    let select: (String) -> Void
     let showArtwork: (Song) -> Void
-    let fixTags: ([Song], _ online: Bool) -> Void
+    let tagAction: ([Song], TagAction) -> Void
+    /// `all`: Option-click, for every artist.
+    let toggle: (_ all: Bool) -> Void
     @Environment(Player.self) private var player
 
     private var summary: String {
@@ -72,31 +105,40 @@ private struct ArtistSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Text(artist.name).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                CollapseTitle(text: artist.name, font: .system(size: 15, weight: .semibold), collapsed: collapsed, toggle: toggle)
                 Text(summary).font(.system(size: 11)).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
-            ForEach(artist.albums) { album in
+            .selectableHeader(selected: selected == artist.id) { select(artist.id) }
+            ForEach(collapsed ? [] : artist.albums) { album in
                 HStack(alignment: .top, spacing: 12) {
                     let cover = album.tracks.first { $0.artworkKey != nil }
                     ArtworkView(key: cover?.artworkKey, size: 44)
                         .onTapGesture { if let cover { showArtwork(cover) } }
                     VStack(alignment: .leading, spacing: 0) {
+                        let albumID = ArtistListView.albumID(album, of: artist)
                         Text([album.name, album.year].filter { !$0.isEmpty }.joined(separator: " · "))
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .selectableHeader(selected: selected == albumID) { select(albumID) }
+                            .id(albumID)
                             .padding(.bottom, 4)
                         ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, song in
-                            TrackRow(song: song, number: index + 1, showArtist: false, playing: player.current?.id == song.id) {
+                            TrackRow(song: song, number: index + 1, showArtist: false, playing: player.current?.id == song.id,
+                                     selected: selected == song.id, select: { select(song.id) }) {
                                 player.play(song, queue: queue)
                             }
-                            .contextMenu { TrackMenu(song: song, album: album.tracks, queue: queue, fixTags: fixTags) }
+                            .contextMenu { TrackMenu(song: song, album: album.tracks, queue: queue, tagAction: tagAction) }
                         }
                     }
                 }
             }
         }
+        // Collapsed, nothing else fills the width, and the list would center the section.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.vertical, collapsed ? 10 : 14)
     }
 }

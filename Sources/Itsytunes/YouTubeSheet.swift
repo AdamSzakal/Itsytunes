@@ -143,7 +143,8 @@ struct YouTubeSheet: View {
 }
 
 /// Rounded search field with a focus ring, matching the toolbar search.
-private struct SearchField: View {
+/// Rounded search field with a focus ring, matching the toolbar search. Focused when it appears.
+struct SearchField: View {
     let prompt: String
     @Binding var text: String
     let onSubmit: () -> Void

@@ -33,7 +33,10 @@ struct ItsytunesApp: App {
             }
             // Replaces the text Find/Spelling menus (nothing here edits text) with a Find that focuses the library search.
             CommandGroup(replacing: .textEditing) {
-                Button("Find") { focusLibrarySearch() }.keyboardShortcut("f")
+                Button("Find") { NotificationCenter.default.post(name: .focusLibrarySearch, object: nil) }
+                    .keyboardShortcut("f")
+                Button("Quick Search…") { NotificationCenter.default.post(name: .toggleQuickSearch, object: nil) }
+                    .keyboardShortcut("k")
             }
             CommandMenu("Controls") {
                 Button(player.isPlaying ? "Pause" : "Play") { player.toggle() }
@@ -46,14 +49,6 @@ struct ItsytunesApp: App {
             SettingsView().environment(library).environment(bandcampSync)
         }
     }
-}
-
-/// SwiftUI has no API to focus a toolbar `.searchable` field before macOS 15, so ask the toolbar item directly.
-@MainActor
-private func focusLibrarySearch() {
-    let window = NSApp.keyWindow ?? NSApp.mainWindow
-    let item = window?.toolbar?.items.lazy.compactMap { $0 as? NSSearchToolbarItem }.first
-    item?.beginSearchInteraction()
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {

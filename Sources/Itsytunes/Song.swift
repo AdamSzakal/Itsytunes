@@ -58,13 +58,15 @@ struct Tags: Sendable {
     var year = ""
     var genre = ""
     var track: Int?
+    /// Not kept in `Song`: only the tag editor shows it, read from the file.
+    var albumArtist = ""
     var artwork: Data?
     var duration: Double = 0
     /// Read only (see `Song.bandcampPage`); writers ignore it.
     var bandcampPage = ""
 
     var isEmpty: Bool {
-        [title, artist, album, year, genre].allSatisfy(\.isEmpty) && track == nil
+        [title, artist, album, albumArtist, year, genre].allSatisfy(\.isEmpty) && track == nil
     }
 }
 
