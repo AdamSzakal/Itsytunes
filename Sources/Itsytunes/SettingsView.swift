@@ -8,11 +8,18 @@ struct SettingsView: View {
     @State private var showBandcampLogin = false
     /// Saved on Return or when Settings closes, not on every keystroke.
     @State private var keyDraft = ""
+    @AppStorage(MenuBarTicker.enabledKey) private var showInMenuBar = true
 
     var body: some View {
         @Bindable var library = library
         @Bindable var bandcamp = bandcamp
         Form {
+            Section {
+                Toggle("Show the playing song in the menu bar", isOn: $showInMenuBar)
+            } header: {
+                Text("Menu Bar")
+            }
+
             Section {
                 Toggle("Include online-only files", isOn: $library.includeOnlineOnly)
             } header: {

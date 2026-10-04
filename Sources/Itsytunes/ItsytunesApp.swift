@@ -4,13 +4,18 @@ import SwiftUI
 struct ItsytunesApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var library = Library()
-    @State private var player = Player()
+    @State private var player: Player
+    @State private var ticker: MenuBarTicker
     @State private var downloader = Downloader()
     @State private var bandcampSync = BandcampSync()
+    @AppStorage(MenuBarTicker.enabledKey) private var showInMenuBar = true
 
     init() {
         // Needed when run as a bare executable (`swift run`) instead of the .app bundle.
         NSApplication.shared.setActivationPolicy(.regular)
+        let player = Player()
+        _player = State(initialValue: player)
+        _ticker = State(initialValue: MenuBarTicker(player: player))
     }
 
     var body: some Scene {
@@ -47,6 +52,17 @@ struct ItsytunesApp: App {
 
         Settings {
             SettingsView().environment(library).environment(bandcampSync)
+        }
+
+        // The playing song in the menu bar. Turned off in Settings, or by ⌘-dragging it out of the menu bar.
+        MenuBarExtra(isInserted: $showInMenuBar) {
+            MenuBarMenu().environment(player)
+        } label: {
+            if let text = ticker.text {
+                Text(text)
+            } else {
+                Image(systemName: "music.note")
+            }
         }
     }
 }
