@@ -23,6 +23,8 @@ enum DownloadTagger {
         /// Album name for a video with chapters, else song title.
         var name: String
         var year = ""
+        /// The title had no artist, so the channel was used.
+        var artistFromChannel = false
     }
 
     /// `work` holds `video.info.json`, an optional `cover.jpg`, `full/<any>.mp3`, and possibly
@@ -83,6 +85,14 @@ enum DownloadTagger {
         // One lookup per video: the catalogue album, else for an album its first song identifies the release.
         // An unsplit full album is not looked up as a song: a song with the album's name may be on another release.
         var match = catalogue?.match
+        // A fan upload may be titled with only the artist ("The Chemical Brothers" on a channel "Arte Ruido").
+        // If the catalogue has the first song by that artist, its album names the release.
+        if match == nil, isAlbum, guess.artistFromChannel, let first = songTitles.first,
+           let found = try? await OnlineLookup.shared.find(title: first, artist: guess.name, album: "") {
+            guess.artist = found.artist
+            guess.name = found.album
+            match = found
+        }
         if match == nil, isAlbum || !looksLikeAlbum {
             match = try? await OnlineLookup.shared.find(
                 title: isAlbum ? (songTitles.first ?? guess.name) : guess.name, artist: guess.artist, album: isAlbum ? guess.name : ""
@@ -143,7 +153,7 @@ enum DownloadTagger {
         // No "Artist - " in the title: the channel is the best guess ("Deep Purple - Topic", "DeepPurpleVEVO").
         let channel = (info.channel ?? info.uploader ?? "")
             .replacing(#/(?i)\s*-\s*topic$|vevo$|\s+official$/#, with: "")
-        return Guess(artist: channel, name: title)
+        return Guess(artist: channel, name: title, artistFromChannel: true)
     }
 
     /// Removes upload noise: "(Full Album)", "[Official Video]", "| Lyrics", "Full Album".
