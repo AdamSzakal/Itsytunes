@@ -7,11 +7,14 @@ struct YouTubeVideo: Identifiable, Sendable {
     let channel: String
     let published: String
     let thumbnail: URL?
+    /// Seconds; nil when the length lookup failed.
+    let duration: Double?
 
     var url: URL { URL(string: "https://www.youtube.com/watch?v=\(id)")! }
 }
 
-/// Search through the YouTube Data API v3. Each search costs 100 of the free 10,000 daily quota units.
+/// Search through the YouTube Data API v3. Each search costs 100 of the free 10,000 daily quota units,
+/// plus 1 unit for the video lengths, which the search results do not include.
 enum YouTube {
     struct APIError: LocalizedError {
         let message: String
@@ -37,6 +40,15 @@ enum YouTube {
         let items: [Item]
     }
 
+    private struct DetailsResponse: Decodable {
+        struct Item: Decodable {
+            struct Details: Decodable { let duration: String }
+            let id: String
+            let contentDetails: Details
+        }
+        let items: [Item]
+    }
+
     private struct ErrorResponse: Decodable {
         struct Body: Decodable { let message: String }
         let error: Body
@@ -56,16 +68,53 @@ enum YouTube {
             let message = (try? JSONDecoder().decode(ErrorResponse.self, from: data))?.error.message
             throw APIError(message: message?.htmlUnescaped ?? "YouTube search failed.")
         }
-        return try JSONDecoder().decode(Response.self, from: data).items.compactMap { item in
+        let items = try JSONDecoder().decode(Response.self, from: data).items
+        // The lengths are extra: without them the results still show.
+        let durations = (try? await durations(of: items.compactMap(\.id.videoId), key: key)) ?? [:]
+        return items.compactMap { item in
             guard let id = item.id.videoId else { return nil }
             return YouTubeVideo(
                 id: id,
                 title: item.snippet.title.htmlUnescaped,
                 channel: item.snippet.channelTitle.htmlUnescaped,
                 published: String(item.snippet.publishedAt.prefix(4)),
-                thumbnail: item.snippet.thumbnails.medium?.url
+                thumbnail: item.snippet.thumbnails.medium?.url,
+                duration: durations[id]
             )
         }
+    }
+
+    /// Video lengths in seconds, by video ID.
+    private static func durations(of ids: [String], key: String) async throws -> [String: Double] {
+        guard !ids.isEmpty else { return [:] }
+        var components = URLComponents(string: "https://www.googleapis.com/youtube/v3/videos")!
+        components.queryItems = [
+            URLQueryItem(name: "part", value: "contentDetails"),
+            URLQueryItem(name: "id", value: ids.joined(separator: ",")),
+            URLQueryItem(name: "key", value: key),
+        ]
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        let items = try JSONDecoder().decode(DetailsResponse.self, from: data).items
+        return Dictionary(items.compactMap { item in parseDuration(item.contentDetails.duration).map { (item.id, $0) } },
+                          uniquingKeysWith: { first, _ in first })
+    }
+
+    /// "PT1H2M3S" -> 3723. YouTube gives lengths in ISO 8601; very long ones start with days ("P1DT2H").
+    /// Live streams give "P0D", which is 0 and so shows no length.
+    static func parseDuration(_ text: String) -> Double? {
+        let units: [Character: Double] = ["D": 86400, "H": 3600, "M": 60, "S": 1]
+        var total = 0.0, number = ""
+        for character in text.dropFirst() where character != "T" { // drop the leading "P"
+            if character.isNumber {
+                number.append(character)
+            } else if let unit = units[character], let value = Double(number) {
+                total += value * unit
+                number = ""
+            } else {
+                return nil
+            }
+        }
+        return total > 0 ? total : nil
     }
 }
 

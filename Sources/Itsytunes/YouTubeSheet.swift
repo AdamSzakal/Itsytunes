@@ -198,6 +198,11 @@ private struct ResultRow: View {
                     .font(.system(size: 12.5, weight: .medium))
                     .lineLimit(1)
                 Spacer(minLength: 8)
+                if let duration = video.duration {
+                    Text(formatTime(duration))
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
                 Text(video.channel)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
