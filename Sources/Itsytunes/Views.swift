@@ -13,13 +13,13 @@ struct ContentView: View {
     /// Song, album or artist to scroll to in the table or the album and artist lists.
     @State private var scrollTarget: ScrollTarget?
     /// Albums and artists shown without their songs, in the album and artist views.
-    @State private var collapsed: Set<String> = []
+    @State private var collapsed = Set(UserDefaults.standard.stringArray(forKey: "collapsed") ?? [])
     @State private var tagRequest: TagRequest?
     @AppStorage("libraryLayout") private var layout = LibraryLayout.songs
-    @State private var search = ""
-    /// Not saved: a filter left on from an earlier session would hide songs without notice.
-    @State private var filter = SongFilter()
-    @State private var showFilters = false
+    @AppStorage("search") private var search = ""
+    /// Saved, so the app opens as it was left. The filter bar then opens too, so the hidden songs are no surprise.
+    @State private var filter = UserDefaults.standard.decoded(SongFilter.self, forKey: "filter") ?? SongFilter()
+    @State private var showFilters = UserDefaults.standard.decoded(SongFilter.self, forKey: "filter")?.isActive ?? false
     @State private var showYouTube = false
     @State private var showQuickSearch = false
     @State private var viewingArtwork: Song?
@@ -29,9 +29,8 @@ struct ContentView: View {
         guard let data = UserDefaults.standard.data(forKey: "columns-v2") else { return TableColumnCustomization() }
         return (try? JSONDecoder().decode(TableColumnCustomization<Song>.self, from: data)) ?? TableColumnCustomization()
     }()
-    @State private var sortOrder = [
-        KeyPathComparator(\Song.artist), KeyPathComparator(\Song.album), KeyPathComparator(\Song.trackSort),
-    ]
+    @State private var sortOrder = UserDefaults.standard.decoded([SortKey].self, forKey: "sortOrder")?.compactMap(\.comparator)
+        ?? [KeyPathComparator(\Song.artist), KeyPathComparator(\Song.album), KeyPathComparator(\Song.trackSort)]
 
     /// Songs matching the filter and the search, in library order.
     private var matches: [Song] {
@@ -116,7 +115,8 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.15), value: viewingArtwork?.id)
         .animation(.easeOut(duration: 0.1), value: showQuickSearch)
-        .onAppear { player.library = { [library] in library.songs } }
+        .onAppear(perform: resume)
+        .modifier(SaveViewState(filter: filter, collapsed: collapsed, sortOrder: sortOrder))
         .onChange(of: downloader.added) {
             pendingReveal = Set(downloader.added.map(\.path))
             revealDownload()
@@ -215,6 +215,16 @@ struct ContentView: View {
     }
 
     /// Selects the downloaded songs and scrolls to them, once a scan has added all of them.
+    /// Carries on where the last session stopped: the song is loaded paused, and shown in the list.
+    private func resume() {
+        player.library = { [library] in library.songs }
+        player.restore(from: library.songs)
+        if let song = player.current {
+            selection = [song.id]
+            scrollTarget = ScrollTarget(id: song.id)
+        }
+    }
+
     private func revealDownload() {
         guard !pendingReveal.isEmpty, library.scanStatus == nil,
               pendingReveal.isSubset(of: Set(library.songs.map(\.id))) else { return }
@@ -316,7 +326,9 @@ struct ContentView: View {
                         Text(rowNumbers[song.id].map(String.init) ?? "")
                     }
                 }
-                .foregroundStyle(player.current?.id == song.id ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                // Songs that repeat plays again get accent-colored numbers, except on the blue selection.
+                .foregroundStyle(player.isRepeated(song) && !selection.contains(song.id) ? AnyShapeStyle(.tint)
+                                 : player.current?.id == song.id ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .width(min: 34, ideal: 34, max: 34) // a fixed max, or as the last column it would stretch
@@ -421,6 +433,46 @@ struct ContentView: View {
     }
 }
 
+/// Saves the filter, the folded groups and the sort order when they change, so the next launch shows the same view.
+private struct SaveViewState: ViewModifier {
+    let filter: SongFilter
+    let collapsed: Set<String>
+    let sortOrder: [KeyPathComparator<Song>]
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: filter) { UserDefaults.standard.setEncoded(filter, forKey: "filter") }
+            .onChange(of: collapsed) { UserDefaults.standard.set(Array(collapsed), forKey: "collapsed") }
+            .onChange(of: sortOrder) { UserDefaults.standard.setEncoded(sortOrder.compactMap { SortKey($0) }, forKey: "sortOrder") }
+    }
+}
+
+/// One sort column of the song table, in a form that can be saved.
+/// `KeyPathComparator` cannot be saved itself, so the key path is stored as the column's name.
+private struct SortKey: Codable {
+    let column: String
+    let ascending: Bool
+
+    /// The table's sortable columns.
+    private static let columns: [String: KeyPathComparator<Song>] = [
+        "title": KeyPathComparator(\.displayTitle), "artist": KeyPathComparator(\.artist), "album": KeyPathComparator(\.album),
+        "track": KeyPathComparator(\.trackSort), "year": KeyPathComparator(\.year), "genre": KeyPathComparator(\.genre),
+        "time": KeyPathComparator(\.duration),
+    ]
+
+    init?(_ comparator: KeyPathComparator<Song>) {
+        guard let column = Self.columns.first(where: { $0.value.keyPath == comparator.keyPath })?.key else { return nil }
+        self.column = column
+        ascending = comparator.order == .forward
+    }
+
+    var comparator: KeyPathComparator<Song>? {
+        guard var comparator = Self.columns[column] else { return nil }
+        comparator.order = ascending ? .forward : .reverse
+        return comparator
+    }
+}
+
 /// What to do with the tags of some songs.
 enum TagAction {
     /// Change tags by hand in `TagEditorSheet`.
@@ -470,7 +522,7 @@ struct PlayerBar: View {
                 .buttonStyle(.plain)
                 IconButton(symbol: "forward.fill") { player.next() }
                     .disabled(player.current == nil)
-                IconButton(symbol: "repeat", active: player.repeatAll) { player.repeatAll.toggle() }
+                RepeatButton()
             }
 
             HStack(spacing: 10) {
@@ -479,10 +531,10 @@ struct PlayerBar: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(player.current?.displayTitle ?? "Not Playing")
                         .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(player.repeatMode == .song ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                         .help(player.current?.displayTitle ?? "")
-                    Text([player.current?.artist, player.current?.album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " — "))
+                    subtitle
                         .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
                     HStack(spacing: 6) {
                         Text(formatTime(player.currentTime))
                         Slider(value: Binding(get: { player.currentTime }, set: { player.seek(to: $0) }),
@@ -510,6 +562,58 @@ struct PlayerBar: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.bar)
+    }
+
+    /// "Artist — Album", with the part that repeat plays over and over in the accent color.
+    private var subtitle: Text {
+        guard let song = player.current else { return Text("") }
+        let parts = [(song.artist, RepeatMode.artist), (song.album, .album)].filter { !$0.0.isEmpty }
+        return parts.enumerated().reduce(Text("")) { text, item in
+            let (name, mode) = item.element
+            let part = Text(name).foregroundStyle(player.repeatMode == mode ? Color.accentColor : .secondary)
+            return text + Text(item.offset > 0 ? " — " : "").foregroundStyle(.secondary) + part
+        }
+    }
+}
+
+/// Cycles off → song → album → artist. A small badge tells album and artist apart, and the hover text names
+/// what plays again.
+private struct RepeatButton: View {
+    @Environment(Player.self) private var player
+
+    private var badge: String? {
+        switch player.repeatMode {
+        case .album: "opticaldisc.fill"
+        case .artist: "person.fill"
+        case .off, .song: nil
+        }
+    }
+
+    private var help: String {
+        switch player.repeatMode {
+        case .off: "Repeat: off"
+        case .song: "Repeat this song"
+        case .album: "Repeat this album"
+        case .artist: "Repeat all songs by this artist"
+        }
+    }
+
+    var body: some View {
+        IconButton(symbol: player.repeatMode == .song ? "repeat.1" : "repeat", active: player.repeatMode != .off) {
+            player.repeatMode = player.repeatMode.next
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if let badge {
+                Image(systemName: badge)
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.tint)
+                    .padding(1.5)
+                    .background(Circle().fill(.bar))
+                    .offset(x: 5, y: 4)
+                    .allowsHitTesting(false)
+            }
+        }
+        .help(help)
     }
 }
 

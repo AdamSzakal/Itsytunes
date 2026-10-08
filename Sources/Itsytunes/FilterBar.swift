@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Which songs to show, by where they come from.
-enum SongSource: String, CaseIterable, Identifiable {
+enum SongSource: String, CaseIterable, Identifiable, Codable {
     case all, bandcamp, downloaded, onlineOnly
 
     var id: Self { self }
@@ -27,7 +27,7 @@ enum SongSource: String, CaseIterable, Identifiable {
 }
 
 /// The songs the filter bar lets through. Artist and album names compare without case.
-struct SongFilter: Equatable {
+struct SongFilter: Equatable, Codable {
     var source = SongSource.all
     var artist: String?
     var album: String?

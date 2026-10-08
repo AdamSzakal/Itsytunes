@@ -106,6 +106,7 @@ private struct ArtistSection: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 CollapseTitle(text: artist.name, font: .system(size: 15, weight: .semibold), collapsed: collapsed, toggle: toggle)
+                    .repeatedHeader(artist.albums.flatMap(\.tracks), selected: selected == artist.id)
                 Text(summary).font(.system(size: 11)).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }
@@ -119,15 +120,15 @@ private struct ArtistSection: View {
                         let albumID = ArtistListView.albumID(album, of: artist)
                         Text([album.name, album.year].filter { !$0.isEmpty }.joined(separator: " · "))
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
                             .lineLimit(1)
+                            .repeatedHeader(album.tracks, selected: selected == albumID, otherwise: .secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .selectableHeader(selected: selected == albumID) { select(albumID) }
                             .id(albumID)
                             .padding(.bottom, 4)
                         ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, song in
                             TrackRow(song: song, number: index + 1, showArtist: false, playing: player.current?.id == song.id,
-                                     selected: selected == song.id, select: { select(song.id) }) {
+                                     repeated: player.isRepeated(song), selected: selected == song.id, select: { select(song.id) }) {
                                 player.play(song, queue: queue)
                             }
                             .contextMenu { TrackMenu(song: song, album: album.tracks, queue: queue, tagAction: tagAction) }

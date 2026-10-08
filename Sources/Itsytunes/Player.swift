@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import MediaPlayer
 
@@ -13,8 +14,12 @@ final class Player: NSObject, AVAudioPlayerDelegate {
             UserDefaults.standard.set(volume, forKey: "volume")
         }
     }
-    var shuffle = false
-    var repeatAll = false
+    var shuffle = UserDefaults.standard.bool(forKey: "shuffle") {
+        didSet { UserDefaults.standard.set(shuffle, forKey: "shuffle") }
+    }
+    var repeatMode = RepeatMode(rawValue: UserDefaults.standard.string(forKey: "repeatMode") ?? "") ?? .off {
+        didSet { UserDefaults.standard.set(repeatMode.rawValue, forKey: "repeatMode") }
+    }
 
     @ObservationIgnored private var audio: AVAudioPlayer?
     /// The table rows (sorted and filtered) at the time the user started playback.
@@ -23,10 +28,42 @@ final class Player: NSObject, AVAudioPlayerDelegate {
     /// The library's songs, for pressing play with nothing chosen (set by the main window).
     @ObservationIgnored var library: () -> [Song] = { [] }
 
+    /// The song, position and queue at the last save, for the next launch (see `restore`).
+    private struct Session: Codable {
+        var song: String
+        var time: Double
+        var queue: [String]
+    }
+    private static let sessionFile = AppPaths.support.appendingPathComponent("session.json")
+
     override init() {
         super.init()
         setUpRemoteCommands()
         claimMediaKeys()
+        // The position changes all the time, so it is saved at quit, not on every tick.
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.saveSession() }
+        }
+    }
+
+    /// Loads the song that was playing at the last quit, paused at the same position, with the same queue.
+    /// `songs`: the library, to find the saved paths in. Does nothing once a song is loaded.
+    func restore(from songs: [Song]) {
+        guard current == nil, let data = try? Data(contentsOf: Self.sessionFile),
+              let session = try? JSONDecoder().decode(Session.self, from: data) else { return }
+        let byPath = Dictionary(songs.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
+        guard let song = byPath[session.song] else { return }
+        queue = session.queue.compactMap { byPath[$0] }
+        start(song, at: session.time, playing: false)
+    }
+
+    private func saveSession() {
+        guard let current else {
+            try? FileManager.default.removeItem(at: Self.sessionFile)
+            return
+        }
+        let session = Session(song: current.path, time: audio?.currentTime ?? currentTime, queue: queue.map(\.path))
+        try? JSONEncoder().encode(session).write(to: Self.sessionFile)
     }
 
     /// macOS sends the keyboard's play key to the app that last reported playing, and if that is none
@@ -38,7 +75,7 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         center.playbackState = .playing
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(500))
-            if self.current == nil { self.updateNowPlaying() } // back to "paused"
+            if !self.isPlaying { self.updateNowPlaying() } // back to "paused", or the restored song
         }
     }
 
@@ -53,6 +90,7 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         if audio.isPlaying { audio.pause() } else { audio.play() }
         isPlaying = audio.isPlaying
         updateNowPlaying()
+        saveSession()
     }
 
     func next() { advance(by: 1) }
@@ -74,17 +112,19 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         updateNowPlaying()
     }
 
-    private func start(_ song: Song) {
+    /// `playing`: false loads the song paused, as at launch.
+    private func start(_ song: Song, at time: Double = 0, playing: Bool = true) {
         audio?.stop()
         current = song
         guard let player = try? AVAudioPlayer(contentsOf: song.url) else { return stop() }
         player.delegate = self
         player.volume = volume
-        player.play()
+        player.currentTime = time
+        if playing { player.play() } else { player.prepareToPlay() }
         audio = player
         duration = player.duration
-        currentTime = 0
-        isPlaying = true
+        currentTime = time
+        isPlaying = playing
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -93,6 +133,7 @@ final class Player: NSObject, AVAudioPlayerDelegate {
             }
         }
         updateNowPlaying()
+        saveSession()
     }
 
     private func stop() {
@@ -104,20 +145,40 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         currentTime = 0
         duration = 0
         updateNowPlaying()
+        saveSession()
     }
 
     /// Manual next/previous wraps around; the end of a song only wraps when repeat is on.
+    /// Repeating an album or artist keeps next and previous inside it too.
     private func advance(by step: Int, finished: Bool = false) {
-        guard let current, !queue.isEmpty else { return stop() }
-        let index = queue.firstIndex { $0.id == current.id } ?? -1
+        guard let current else { return stop() }
+        if finished && repeatMode == .song { return start(current) }
+        let pool = repeatMode == .album || repeatMode == .artist ? queue.filter(isRepeated) : queue
+        guard !pool.isEmpty else { return stop() }
+        let index = pool.firstIndex { $0.id == current.id } ?? -1
         var target = index + step
-        if shuffle, queue.count > 1 {
-            repeat { target = Int.random(in: queue.indices) } while target == index
-        } else if !queue.indices.contains(target) {
-            if finished && !repeatAll { return stop() }
-            target = (target + queue.count) % queue.count
+        if shuffle, pool.count > 1 {
+            repeat { target = Int.random(in: pool.indices) } while target == index
+        } else if !pool.indices.contains(target) {
+            if finished && repeatMode == .off { return stop() }
+            target = (target + pool.count) % pool.count
         }
-        start(queue[target])
+        start(pool[target])
+    }
+
+    /// True for the songs that the repeat mode plays over and over: the current song, or all songs of its album
+    /// or artist. An album matches as `AlbumListView.albums` groups it: same name, and same artist or folder.
+    func isRepeated(_ song: Song) -> Bool {
+        guard let current else { return false }
+        switch repeatMode {
+        case .off: return false
+        case .song: return song.id == current.id
+        case .artist: return song.artist.lowercased() == current.artist.lowercased()
+        case .album:
+            guard song.album.lowercased() == current.album.lowercased() else { return false }
+            let folder = { (song: Song) in (song.path as NSString).deletingLastPathComponent }
+            return song.artist.lowercased() == current.artist.lowercased() || !song.album.isEmpty && folder(song) == folder(current)
+        }
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
@@ -165,5 +226,15 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         }
         center.nowPlayingInfo = info
         center.playbackState = isPlaying ? .playing : .paused
+    }
+}
+
+/// What the repeat button repeats. Each click moves to the next mode.
+enum RepeatMode: String, CaseIterable {
+    case off, song, album, artist
+
+    var next: RepeatMode {
+        let all = Self.allCases
+        return all[(all.firstIndex(of: self)! + 1) % all.count]
     }
 }

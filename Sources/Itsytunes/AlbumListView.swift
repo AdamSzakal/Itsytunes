@@ -137,6 +137,7 @@ private struct AlbumSection: View {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
                     CollapseTitle(text: album.name, font: .system(size: 13, weight: .semibold), collapsed: collapsed, toggle: toggle)
+                        .repeatedHeader(album.tracks, selected: selected == album.id)
                     Text(details)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -150,7 +151,7 @@ private struct AlbumSection: View {
                 if !collapsed {
                     ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, song in
                         TrackRow(song: song, number: index + 1, showArtist: album.isCompilation, playing: player.current?.id == song.id,
-                                 selected: selected == song.id, select: { select(song.id) }) { player.play(song, queue: queue) }
+                                 repeated: player.isRepeated(song), selected: selected == song.id, select: { select(song.id) }) { player.play(song, queue: queue) }
                             .contextMenu { TrackMenu(song: song, album: album.tracks, queue: queue, tagAction: tagAction) }
                     }
                 }
@@ -270,12 +271,31 @@ extension View {
             .simultaneousGesture(TapGesture().onEnded(select))
     }
 
+    /// Accent color on an album or artist title while repeat plays all of its songs (so also when it is folded).
+    /// `otherwise`: the title's usual style. Hierarchical, so it still turns white on the selection.
+    func repeatedHeader(_ songs: [Song], selected: Bool, otherwise: HierarchicalShapeStyle = .primary) -> some View {
+        modifier(RepeatedHeader(songs: songs, selected: selected, otherwise: otherwise))
+    }
+
     /// The one highlight in the album and artist lists: the selected row, in the accent color with white text,
     /// as in a system list.
     func selectionHighlight(_ selected: Bool) -> some View {
         background(selected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 4))
             // Secondary and tertiary text inside become shades of white.
             .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+    }
+}
+
+private struct RepeatedHeader: ViewModifier {
+    let songs: [Song]
+    let selected: Bool
+    let otherwise: HierarchicalShapeStyle
+    @Environment(Player.self) private var player
+
+    func body(content: Content) -> some View {
+        // Album or artist mode only: in song mode, the song's number already shows it.
+        let repeated = !selected && [.album, .artist].contains(player.repeatMode) && songs.allSatisfy(player.isRepeated)
+        content.foregroundStyle(repeated ? AnyShapeStyle(.tint) : AnyShapeStyle(otherwise))
     }
 }
 
@@ -401,6 +421,8 @@ struct TrackRow: View {
     let number: Int
     let showArtist: Bool
     let playing: Bool
+    /// One of the songs that repeat plays again: its number is in the accent color.
+    let repeated: Bool
     let selected: Bool
     let select: () -> Void
     let play: () -> Void
@@ -415,7 +437,8 @@ struct TrackRow: View {
                 }
             }
             .frame(width: 20, alignment: .trailing)
-            .foregroundStyle(playing ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+            // Not on the selection, whose accent background would hide it.
+            .foregroundStyle(repeated && !selected ? AnyShapeStyle(.tint) : playing ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
             Text(song.displayTitle)
                 .font(.system(size: 12))
                 .fontWeight(playing ? .semibold : .regular)

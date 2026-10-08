@@ -80,6 +80,17 @@ enum AppPaths {
     }()
 }
 
+extension UserDefaults {
+    /// A value saved as JSON with `setEncoded`, or nil when there is none or it no longer decodes.
+    func decoded<T: Decodable>(_ type: T.Type, forKey key: String) -> T? {
+        data(forKey: key).flatMap { try? JSONDecoder().decode(type, from: $0) }
+    }
+
+    func setEncoded(_ value: some Encodable, forKey key: String) {
+        set(try? JSONEncoder().encode(value), forKey: key)
+    }
+}
+
 func formatTime(_ seconds: Double) -> String {
     let s = max(0, Int(seconds))
     return String(format: "%d:%02d", s / 60, s % 60)
