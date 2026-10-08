@@ -535,15 +535,8 @@ struct PlayerBar: View {
                         .help(player.current?.displayTitle ?? "")
                     subtitle
                         .font(.system(size: 10))
-                    HStack(spacing: 6) {
-                        Text(formatTime(player.currentTime))
-                        Slider(value: Binding(get: { player.currentTime }, set: { player.seek(to: $0) }),
-                               in: 0...max(player.duration, 1))
-                            .controlSize(.mini)
-                            .disabled(player.current == nil)
-                        Text("-" + formatTime(player.duration - player.currentTime))
-                    }
-                    .font(.system(size: 10, weight: .medium))
+                    ProgressRow()
+                        .font(.system(size: 10, weight: .medium))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
                 }
@@ -572,6 +565,25 @@ struct PlayerBar: View {
             let (name, mode) = item.element
             let part = Text(name).foregroundStyle(player.repeatMode == mode ? Color.accentColor : .secondary)
             return text + Text(item.offset > 0 ? " — " : "").foregroundStyle(.secondary) + part
+        }
+    }
+}
+
+/// Elapsed time, position slider and remaining time. Redrawn on every screen refresh while playing, so the
+/// slider moves smoothly: `Player.currentTime` changes only twice a second.
+private struct ProgressRow: View {
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        TimelineView(.animation(paused: !player.isPlaying)) { _ in
+            let time = player.position
+            HStack(spacing: 6) {
+                Text(formatTime(time))
+                Slider(value: Binding(get: { time }, set: { player.seek(to: $0) }), in: 0...max(player.duration, 1))
+                    .controlSize(.mini)
+                    .disabled(player.current == nil)
+                Text("-" + formatTime(player.duration - time))
+            }
         }
     }
 }

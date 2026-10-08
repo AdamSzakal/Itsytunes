@@ -112,6 +112,9 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         if currentTime > 3 { seek(to: 0) } else { advance(by: -1) }
     }
 
+    /// The exact position, for a display that redraws faster than `currentTime` changes.
+    var position: Double { audio?.currentTime ?? currentTime }
+
     func seek(to time: Double) {
         audio?.currentTime = time
         currentTime = time
