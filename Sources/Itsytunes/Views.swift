@@ -581,11 +581,14 @@ struct PlayerBar: View {
 private struct RepeatButton: View {
     @Environment(Player.self) private var player
 
-    private var badge: String? {
-        switch player.repeatMode {
-        case .album: "opticaldisc.fill"
-        case .artist: "person.fill"
-        case .off, .song: nil
+    @ViewBuilder private var badge: some View {
+        if player.repeatMode == .album {
+            // A ring, like a CD: the "opticaldisc" symbol has too much detail at this size.
+            Circle().strokeBorder(.tint, lineWidth: 2.5).frame(width: 8, height: 8)
+        } else {
+            Image(systemName: "person.fill")
+                .font(.system(size: 7, weight: .bold))
+                .foregroundStyle(.tint)
         }
     }
 
@@ -603,10 +606,8 @@ private struct RepeatButton: View {
             player.repeatMode = player.repeatMode.next
         }
         .overlay(alignment: .bottomTrailing) {
-            if let badge {
-                Image(systemName: badge)
-                    .font(.system(size: 7, weight: .bold))
-                    .foregroundStyle(.tint)
+            if player.repeatMode == .album || player.repeatMode == .artist {
+                badge
                     .padding(1.5)
                     .background(Circle().fill(.bar))
                     .offset(x: 5, y: 4)
