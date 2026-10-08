@@ -25,6 +25,8 @@ final class Player: NSObject, AVAudioPlayerDelegate {
     /// The table rows (sorted and filtered) at the time the user started playback.
     @ObservationIgnored private var queue: [Song] = []
     @ObservationIgnored private var timer: Timer?
+    /// Opens the file of the song that `start` was last given.
+    @ObservationIgnored private var loading: Task<Void, Never>?
     /// The library's songs, for pressing play with nothing chosen (set by the main window).
     @ObservationIgnored var library: () -> [Song] = { [] }
 
@@ -86,9 +88,13 @@ final class Player: NSObject, AVAudioPlayerDelegate {
 
     /// Play/pause. With nothing loaded yet, starts a random song in shuffle mode.
     func toggle() {
-        guard let audio else { return playRandom() }
-        if audio.isPlaying { audio.pause() } else { audio.play() }
-        isPlaying = audio.isPlaying
+        guard current != nil else { return playRandom() }
+        if let audio {
+            if audio.isPlaying { audio.pause() } else { audio.play() }
+            isPlaying = audio.isPlaying
+        } else {
+            isPlaying.toggle() // the file is still opening, and `start` plays it only if this is true
+        }
         updateNowPlaying()
         saveSession()
     }
@@ -115,30 +121,46 @@ final class Player: NSObject, AVAudioPlayerDelegate {
     /// `playing`: false loads the song paused, as at launch.
     private func start(_ song: Song, at time: Double = 0, playing: Bool = true) {
         audio?.stop()
+        audio = nil
+        loading?.cancel()
+        timer?.invalidate()
         current = song
-        guard let player = try? AVAudioPlayer(contentsOf: song.url) else { return stop() }
-        player.delegate = self
-        player.volume = volume
-        player.currentTime = time
-        if playing { player.play() } else { player.prepareToPlay() }
-        audio = player
-        duration = player.duration
+        duration = song.duration
         currentTime = time
         isPlaying = playing
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, let audio = self.audio else { return }
-                self.currentTime = audio.currentTime
-            }
-        }
         updateNowPlaying()
         saveSession()
+        // Opening an online-only file (Dropbox, iCloud) waits until the provider has downloaded it,
+        // which takes seconds, so it is opened off the main thread.
+        let url = song.url
+        loading = Task {
+            let player = await Task.detached(priority: .userInitiated) { () -> AVAudioPlayer? in
+                let player = try? AVAudioPlayer(contentsOf: url)
+                player?.prepareToPlay()
+                return player
+            }.value
+            guard !Task.isCancelled else { return } // another song was started meanwhile
+            guard let player else { return stop() }
+            player.delegate = self
+            player.volume = volume
+            player.currentTime = currentTime // kept if the user moved the slider meanwhile
+            if isPlaying { player.play() }
+            audio = player
+            duration = player.duration
+            timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let audio = self.audio else { return }
+                    self.currentTime = audio.currentTime
+                }
+            }
+            updateNowPlaying()
+        }
     }
 
     private func stop() {
         audio?.stop()
         audio = nil
+        loading?.cancel()
         timer?.invalidate()
         current = nil
         isPlaying = false
