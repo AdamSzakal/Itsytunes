@@ -8,7 +8,6 @@ struct ItsytunesApp: App {
     @State private var ticker: MenuBarTicker
     @State private var downloader = Downloader()
     @State private var bandcampSync = BandcampSync()
-    @AppStorage(MenuBarTicker.enabledKey) private var showInMenuBar = true
 
     init() {
         // Needed when run as a bare executable (`swift run`) instead of the .app bundle.
@@ -25,6 +24,7 @@ struct ItsytunesApp: App {
                 .environment(player)
                 .environment(downloader)
                 .environment(bandcampSync)
+                .modifier(MenuBarTicker.WindowOpener(ticker: ticker))
                 .frame(minWidth: 760, minHeight: 420)
         }
         .defaultSize(width: 1100, height: 700)
@@ -52,17 +52,6 @@ struct ItsytunesApp: App {
 
         Settings {
             SettingsView().environment(library).environment(bandcampSync)
-        }
-
-        // The playing song in the menu bar. Turned off in Settings, or by ⌘-dragging it out of the menu bar.
-        MenuBarExtra(isInserted: $showInMenuBar) {
-            MenuBarMenu().environment(player)
-        } label: {
-            if let text = ticker.text {
-                Text(text)
-            } else {
-                Image(systemName: "music.note")
-            }
         }
     }
 }
