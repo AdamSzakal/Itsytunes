@@ -197,7 +197,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showYouTube) {
-            YouTubeSheet(query: youTubeQuery)
+            YouTubeSheet()
         }
         .sheet(item: $tagRequest) { request in
             if request.action == .edit {
@@ -302,12 +302,6 @@ struct ContentView: View {
                                                   : ArtistListView.artists(of: matches, root: root).map(\.id))
             }
         }
-    }
-
-    /// "Artist Title" of the selected song, else of the playing one.
-    private var youTubeQuery: String {
-        guard let song = library.songs.first(where: { selection.contains($0.id) }) ?? player.current else { return "" }
-        return [song.artist, song.displayTitle].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     private func table(_ scroller: ScrollViewProxy) -> some View {

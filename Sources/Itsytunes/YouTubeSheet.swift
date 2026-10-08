@@ -5,7 +5,7 @@ struct YouTubeSheet: View {
     @Environment(Library.self) private var library
     @Environment(Downloader.self) private var downloader
     @State private var account = YouTubeAccount.shared
-    @State private var query: String
+    @State private var query = ""
     @State private var results: [YouTubeVideo] = []
     @State private var loading = false
     @State private var error: String?
@@ -13,10 +13,6 @@ struct YouTubeSheet: View {
     /// Result chosen with the arrow keys; Enter downloads it.
     @State private var highlighted: Int?
     @State private var keyMonitor: Any?
-
-    init(query: String) {
-        _query = State(initialValue: query)
-    }
 
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
 
@@ -41,7 +37,6 @@ struct YouTubeSheet: View {
             .padding(12)
         }
         .frame(width: 560, height: 460)
-        .task { await search() }
         .onChange(of: results.map(\.id)) { highlighted = nil }
         // A local monitor sees the keys before the search field does, which would use ↑/↓ to move its cursor.
         .onAppear { keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: handleKey) }
