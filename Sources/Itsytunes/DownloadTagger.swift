@@ -62,10 +62,19 @@ enum DownloadTagger {
         let looksLikeAlbum = (info.duration ?? 0) >= 480 || info.title.localizedCaseInsensitiveContains("full album")
         let catalogue = looksLikeAlbum ? try? await OnlineLookup.shared.album(guess.name, artist: guess.artist) : nil
 
-        // Songs of the album, in order: yt-dlp's chapters, else a tracklist from the description,
-        // else the catalogue's song lengths.
+        // A tracklist of song lengths: YouTube takes the lengths for start times, so its chapters are wrong.
+        let listed = Tracklist.lengths(info.description ?? "", duration: info.duration ?? 0)
+
+        // Songs of the album, in order: a tracklist of lengths from the description, else yt-dlp's chapters,
+        // else a tracklist of start times from the description, else the catalogue's song lengths.
         var songs: [(file: URL, number: Int, title: String)] = []
-        if chapters.count >= 2 && !broken {
+        if let listed, let full, let ffmpeg,
+           let tracks = Tracklist.fromLengths(listed, file: full, duration: info.duration ?? 0, ffmpeg: ffmpeg),
+           let files = try? Tracklist.split(full, into: tracks, directory: work.appendingPathComponent("tracks"), ffmpeg: ffmpeg) {
+            songs = zip(files, tracks).enumerated().map { i, pair in
+                (pair.0, i + 1, TitleCleaner.clean(pair.1.title, artist: guess.artist, album: guess.name))
+            }
+        } else if chapters.count >= 2 && !broken && listed == nil {
             songs = chapters.map { ($0.file, $0.number, chapterTitle($0.file, artist: guess.artist)) }
         } else if let full, let ffmpeg,
                   let tracks = Tracklist.parse(info.description ?? "", duration: info.duration ?? 0),

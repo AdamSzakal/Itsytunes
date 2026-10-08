@@ -42,6 +42,35 @@ enum Tracklist {
         return nil
     }
 
+    /// Song lengths from a tracklist that gives each song's length, not its start ("2. Ease My Mind  5:28").
+    /// YouTube takes those for start times, so the video's chapters are wrong too. Needs numbered lines in order,
+    /// with lengths that add up to the video; one song without a length (often the last) gets what is left.
+    static func lengths(_ description: String, duration: Double) -> [(title: String, duration: Double)]? {
+        guard duration > 0 else { return nil }
+        var songs: [(title: String, duration: Double?)] = []
+        for line in description.split(whereSeparator: \.isNewline) {
+            guard let m = line.wholeMatch(of: numbered), Int(m.1) == songs.count + 1 else { continue }
+            let found = line.matches(of: timestamp)
+            guard found.count <= 1 else { return nil }
+            var title = line
+            if let match = found.first { title.removeSubrange(match.range) }
+            songs.append((tidy(String(title)), found.first.map { seconds($0.output) }))
+        }
+        let known = songs.compactMap(\.duration)
+        let rest = duration - known.reduce(0, +)
+        // A list of start times begins at 0:00, and its times add up to far more than the video.
+        guard songs.count >= 3, known.allSatisfy({ $0 >= 20 }) else { return nil }
+        switch songs.count - known.count {
+        case 0: guard abs(rest) <= max(10, duration * 0.02) else { return nil }
+        case 1: guard rest >= 20 else { return nil }
+        default: return nil
+        }
+        return songs.map { ($0.title, $0.duration ?? rest) }
+    }
+
+    /// "2. Ease My Mind  5:28" or "14) Qîdar".
+    private static let numbered = #/\s*(\d{1,3})[.)]\s+.+/#
+
     /// "1:02:03" or "4:40".
     private static let timestamp = #/(?:(\d{1,2}):)?(\d{1,2}):(\d{2})/#
 
