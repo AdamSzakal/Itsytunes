@@ -132,7 +132,8 @@ private final class MarqueeView: NSView {
     }
 
     var isPanning = false {
-        didSet { if isPanning != oldValue { updateAnimation() } }
+        // A paused text goes back to its start, so the start of the song name shows.
+        didSet { if isPanning != oldValue { updateAnimation(from: isPanning ? nil : 0) } }
     }
 
     override init(frame: NSRect) {
@@ -179,7 +180,7 @@ private final class MarqueeView: NSView {
         updateAnimation()
     }
 
-    /// Pausing keeps the text where it is; playing again continues from there. `start` nil: from where it is now.
+    /// `start` nil: from where the text is now.
     private func updateAnimation(from start: CGFloat? = nil) {
         guard let layer = strip.layer else { return }
         let shown = (layer.presentation() ?? layer).value(forKeyPath: "transform.translation.x") as? CGFloat ?? 0
