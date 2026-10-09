@@ -8,6 +8,8 @@ final class Player: NSObject, AVAudioPlayerDelegate {
     private(set) var isPlaying = false
     private(set) var currentTime: Double = 0
     private(set) var duration: Double = 0
+    /// Codec, bit rate and so on of the current song. Nil until its file is open.
+    private(set) var audioInfo: AudioInfo?
     var volume: Float = UserDefaults.standard.object(forKey: "volume") as? Float ?? 0.8 {
         didSet {
             audio?.volume = volume
@@ -128,6 +130,7 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         loading?.cancel()
         timer?.invalidate()
         current = song
+        audioInfo = nil
         duration = song.duration
         currentTime = time
         isPlaying = playing
@@ -144,6 +147,11 @@ final class Player: NSObject, AVAudioPlayerDelegate {
             }.value
             guard !Task.isCancelled else { return } // another song was started meanwhile
             guard let player else { return stop() }
+            // The file is local now, so this is quick. It does not hold up the start of the song.
+            Task { [weak self] in
+                let info = await AudioInfo.read(url)
+                if self?.current?.url == url { self?.audioInfo = info }
+            }
             player.delegate = self
             player.volume = volume
             player.currentTime = currentTime // kept if the user moved the slider meanwhile
@@ -166,6 +174,7 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         loading?.cancel()
         timer?.invalidate()
         current = nil
+        audioInfo = nil
         isPlaying = false
         currentTime = 0
         duration = 0

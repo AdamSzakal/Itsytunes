@@ -92,3 +92,55 @@ private extension AVMetadataItem {
         return trimmed.isEmpty ? nil : trimmed
     }
 }
+
+/// The audio stream of a file: what the footer shows about the playing song.
+struct AudioInfo: Sendable {
+    var codec = ""
+    /// Bits per second, from the audio track (artwork and tags not counted). 0 when unknown.
+    var bitRate: Float = 0
+    var sampleRate: Double = 0
+    var channels = 0
+    var fileSize: Int64 = 0
+
+    static func read(_ url: URL) async -> AudioInfo {
+        var info = AudioInfo()
+        info.codec = url.pathExtension.uppercased() // replaced below when the track names its codec
+        info.fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        guard let track = try? await AVURLAsset(url: url).loadTracks(withMediaType: .audio).first,
+              let (rate, formats) = try? await track.load(.estimatedDataRate, .formatDescriptions) else { return info }
+        info.bitRate = rate
+        if let stream = formats.first?.audioStreamBasicDescription {
+            info.sampleRate = stream.mSampleRate
+            info.channels = Int(stream.mChannelsPerFrame)
+            if let name = codecNames[stream.mFormatID] { info.codec = name }
+        }
+        return info
+    }
+
+    /// The formats AVFoundation plays. WAV and AIFF are PCM, which the file extension names better.
+    private static let codecNames: [AudioFormatID: String] = [
+        kAudioFormatMPEGLayer3: "MP3",
+        kAudioFormatMPEG4AAC: "AAC",
+        kAudioFormatMPEG4AAC_HE: "HE-AAC",
+        kAudioFormatAppleLossless: "ALAC",
+        kAudioFormatFLAC: "FLAC",
+        kAudioFormatOpus: "Opus",
+    ]
+
+    /// "MP3 · 320 kbps · 44.1 kHz · Stereo · 9.4 MB", without the parts that are unknown.
+    var summary: String {
+        let channelName = switch channels {
+        case 0: ""
+        case 1: "Mono"
+        case 2: "Stereo"
+        default: "\(channels) channels"
+        }
+        return [
+            codec,
+            bitRate > 0 ? "\(Int((bitRate / 1000).rounded())) kbps" : "",
+            sampleRate > 0 ? "\((sampleRate / 1000).formatted(.number.precision(.fractionLength(0...1)))) kHz" : "",
+            channelName,
+            fileSize > 0 ? ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file) : "",
+        ].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+}

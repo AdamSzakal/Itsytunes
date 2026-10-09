@@ -103,6 +103,8 @@ struct ContentView: View {
             DownloadsBar()
             Divider()
             PlayerBar { viewingArtwork = $0 }
+            Divider()
+            StatusFooter(shown: matches)
         }
         .overlay {
             if let song = viewingArtwork {
@@ -560,6 +562,58 @@ struct PlayerBar: View {
             let part = Text(name).foregroundStyle(player.repeatMode == mode ? Color.accentColor : .secondary)
             return text + Text(item.offset > 0 ? " — " : "").foregroundStyle(.secondary) + part
         }
+    }
+}
+
+/// One line of small text below the player bar: the library on the left, the play modes that are on in the middle,
+/// and the playing song's audio stream on the right.
+private struct StatusFooter: View {
+    @Environment(Library.self) private var library
+    @Environment(Player.self) private var player
+    /// The songs that the search and filters let through.
+    let shown: [Song]
+
+    /// "Total: 1,234 songs · 3 days, 4 hr", or "Total: 120 of 1,234 songs · 8 hr" when a search or filter hides some.
+    private var librarySummary: String {
+        guard !library.songs.isEmpty else { return "" }
+        let total = library.songs.count.formatted()
+        let count = shown.count == library.songs.count ? "\(total) songs" : "\(shown.count.formatted()) of \(total) songs"
+        let time = Self.durationFormatter.string(from: shown.reduce(0) { $0 + $1.duration }) ?? ""
+        return "Total: " + [count, time].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    private static let durationFormatter: DateComponentsFormatter = {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.day, .hour, .minute]
+        formatter.unitsStyle = .short
+        formatter.maximumUnitCount = 2
+        return formatter
+    }()
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(librarySummary)
+            Spacer(minLength: 12)
+            if let summary = player.audioInfo?.summary {
+                Text(summary).help(summary)
+            }
+        }
+        // In the middle of the window, not of the free space between the two sides.
+        .overlay {
+            HStack(spacing: 12) {
+                if player.shuffle { Text("Shuffle") }
+                if player.repeatMode != .off { Text("Repeat \(player.repeatMode.rawValue)") }
+            }
+        }
+        .foregroundStyle(.secondary)
+        .font(.system(size: 10))
+        .lineLimit(1)
+        .frame(height: 13) // the same height when it shows nothing
+        // Room for the window's rounded corners, which are close below and to the side.
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+        .background(.bar)
     }
 }
 
