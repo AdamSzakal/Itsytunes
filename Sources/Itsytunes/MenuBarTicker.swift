@@ -97,43 +97,41 @@ private final class MenuItem: NSMenuItem {
     @objc private func runAction() { run() }
 }
 
-/// The text in the status item. A text wider than `maxWidth` pans to the left and starts again after a gap.
+/// The text in the status item. A text wider than `maxWidth` pans to the left until its end shows, then back.
 /// Core Animation moves it at the display's frame rate (60 or 120 fps), so the app does no work per frame.
 private final class MarqueeView: NSView {
     private static let maxWidth: CGFloat = 240
     private static let padding: CGFloat = 6
     /// Points per second.
     private static let speed: CGFloat = 30
-    /// Between the end of a panning text and its start again.
-    private static let gap: CGFloat = 40
+    /// Seconds the text stays still at each end, so its start and its end can be read.
+    private static let hold: CGFloat = 1.5
     /// Width of the fade at each end of a panning text, from the edge of the item.
     private static let fade: CGFloat = 16
 
-    /// Two copies side by side: when the first has moved out on the left, the second is where the first started.
-    private let strip = NSView()
-    private let labels = [NSTextField(labelWithString: ""), NSTextField(labelWithString: "")]
+    private let label = NSTextField(labelWithString: "")
     /// Fades the text out at both ends, so it does not end in a hard cut.
     private let fadeMask = CAGradientLayer()
     private var textWidth: CGFloat = 0
-    private var period: CGFloat { textWidth + Self.gap }
     private var pans: Bool { textWidth > Self.maxWidth }
+    /// A panning text is inset by the fade, so the fade does not cover its first or last letters at each end.
+    private var inset: CGFloat { pans ? Self.fade : Self.padding }
 
     /// The status item length that fits the text.
-    var width: CGFloat { min(textWidth, Self.maxWidth) + 2 * Self.padding }
+    var width: CGFloat { min(textWidth, Self.maxWidth) + 2 * inset }
 
     var text = "" {
         didSet {
-            for label in labels { label.stringValue = text }
-            textWidth = ceil(labels[0].fittingSize.width)
-            labels[1].isHidden = !pans
+            label.stringValue = text
+            textWidth = ceil(label.fittingSize.width)
             needsLayout = true
-            updateAnimation(from: 0)
+            updateAnimation()
         }
     }
 
+    /// A paused text goes back to its start, so the start of the song name shows.
     var isPanning = false {
-        // A paused text goes back to its start, so the start of the song name shows.
-        didSet { if isPanning != oldValue { updateAnimation(from: isPanning ? nil : 0) } }
+        didSet { if isPanning != oldValue { updateAnimation() } }
     }
 
     override init(frame: NSRect) {
@@ -143,13 +141,10 @@ private final class MarqueeView: NSView {
         fadeMask.startPoint = CGPoint(x: 0, y: 0.5)
         fadeMask.endPoint = CGPoint(x: 1, y: 0.5)
         fadeMask.colors = [NSColor.clear, .black, .black, .clear].map(\.cgColor)
-        strip.wantsLayer = true
-        addSubview(strip)
-        for label in labels {
-            label.font = .menuBarFont(ofSize: 0)
-            label.lineBreakMode = .byClipping
-            strip.addSubview(label)
-        }
+        label.wantsLayer = true
+        label.font = .menuBarFont(ofSize: 0)
+        label.lineBreakMode = .byClipping
+        addSubview(label)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -159,11 +154,8 @@ private final class MarqueeView: NSView {
 
     override func layout() {
         super.layout()
-        let height = ceil(labels[0].fittingSize.height)
-        let y = round((bounds.height - height) / 2)
-        labels[0].frame = NSRect(x: 0, y: 0, width: textWidth, height: height)
-        labels[1].frame = NSRect(x: period, y: 0, width: textWidth, height: height)
-        strip.frame = NSRect(x: Self.padding, y: y, width: period + textWidth, height: height)
+        let height = ceil(label.fittingSize.height)
+        label.frame = NSRect(x: inset, y: round((bounds.height - height) / 2), width: textWidth, height: height)
         // A text that fits needs no fade.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -180,21 +172,22 @@ private final class MarqueeView: NSView {
         updateAnimation()
     }
 
-    /// `start` nil: from where the text is now.
-    private func updateAnimation(from start: CGFloat? = nil) {
-        guard let layer = strip.layer else { return }
-        let shown = (layer.presentation() ?? layer).value(forKeyPath: "transform.translation.x") as? CGFloat ?? 0
-        let start = start ?? (pans ? shown.truncatingRemainder(dividingBy: period) : 0)
+    /// Always starts from the start of the text.
+    private func updateAnimation() {
+        guard let layer = label.layer else { return }
         layer.removeAnimation(forKey: "pan")
-        layer.setValue(start, forKeyPath: "transform.translation.x")
+        layer.setValue(0, forKeyPath: "transform.translation.x")
         guard isPanning, pans, window != nil else { return }
-        // The text repeats every `period` points, so a loop from `start` to `start - period` has no visible jump.
-        let pan = CABasicAnimation(keyPath: "transform.translation.x")
-        pan.fromValue = start
-        pan.toValue = start - period
-        pan.duration = period / Self.speed
+        // Still at the start, pan until the end shows, still at the end, pan back.
+        let distance = textWidth - Self.maxWidth
+        let move = distance / Self.speed
+        let duration = 2 * (Self.hold + move)
+        let pan = CAKeyframeAnimation(keyPath: "transform.translation.x")
+        pan.values = [0, 0, -distance, -distance, 0]
+        pan.keyTimes = [0, Self.hold, Self.hold + move, 2 * Self.hold + move, duration].map { NSNumber(value: Double($0 / duration)) }
+        pan.duration = duration
         pan.repeatCount = .infinity
-        pan.timingFunction = CAMediaTimingFunction(name: .linear)
+        pan.calculationMode = .linear
         pan.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
         layer.add(pan, forKey: "pan")
     }
