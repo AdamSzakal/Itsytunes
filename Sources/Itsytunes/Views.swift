@@ -23,6 +23,10 @@ struct ContentView: View {
     @State private var showYouTube = false
     @State private var showQuickSearch = false
     @State private var viewingArtwork: Song?
+    /// The pointer is on a song outside the repeat boxes in the table, so the other songs do not fade.
+    @State private var pointerOutsideRepeat = false
+    /// The table's songs outside the repeat boxes are faded: `RepeatBox.fades`, a moment late.
+    @State private var repeatFaded = false
     /// Column order, widths and visibility, saved across launches.
     /// v2: layouts saved before the row-number column existed put it last, so they are dropped once.
     @State private var columns: TableColumnCustomization<Song> = {
@@ -320,6 +324,10 @@ struct ContentView: View {
     private func table(_ scroller: ScrollViewProxy) -> some View {
         let rows = rows
         let rowNumbers = Dictionary(rows.enumerated().map { ($1.id, $0 + 1) }, uniquingKeysWith: { a, _ in a })
+        let repeated = rows.map(player.isRepeated)
+        let repeatRuns = TableRepeatBoxes.runs(repeated)
+        // The first song of each repeat box: its title cell has the chip.
+        let chipRows = Set(repeatRuns.map { rows[$0.lowerBound].id })
         // First of the given songs in table order.
         let firstSong = { (ids: Set<Song.ID>) in rows.first { ids.contains($0.id) } }
         // Drag headers to reorder; right-click a header to show or hide columns.
@@ -333,9 +341,7 @@ struct ContentView: View {
                         Text(rowNumbers[song.id].map(String.init) ?? "")
                     }
                 }
-                // Songs that repeat plays again get accent-colored numbers, except on the blue selection.
-                .foregroundStyle(player.isRepeated(song) && !selection.contains(song.id) ? AnyShapeStyle(.tint)
-                                 : player.current?.id == song.id ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .foregroundStyle(player.current?.id == song.id ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .width(min: 34, ideal: 34, max: 34) // a fixed max, or as the last column it would stretch
@@ -354,6 +360,10 @@ struct ContentView: View {
                         // Bold, not colored: a color would clash with the blue selection.
                         .fontWeight(player.current?.id == song.id ? .semibold : .regular)
                     if let page = song.bandcampLink { BandcampMark(page: page) }
+                    if chipRows.contains(song.id) {
+                        Spacer(minLength: 8)
+                        RepeatChip(mode: player.repeatMode)
+                    }
                 }
             }
             .width(min: 120, ideal: 300)
@@ -389,6 +399,12 @@ struct ContentView: View {
         .monospacedDigit()
         .alternatingRowBackgrounds(.disabled)
         .background(HiddenRowSeparators())
+        .background {
+            let inside = Set(zip(rows, repeated).filter(\.1).map(\.0.id))
+            TableRepeatBoxes(runs: repeatRuns, faded: repeatFaded) { pointerOutsideRepeat = $0 }
+                .repeatFadeTiming(RepeatBox.fades(inside: inside, selected: firstSong(selection)?.id, pointerOutside: pointerOutsideRepeat),
+                                  faded: $repeatFaded)
+        }
         .onChange(of: columns) {
             UserDefaults.standard.set(try? JSONEncoder().encode(columns), forKey: "columns-v2")
         }

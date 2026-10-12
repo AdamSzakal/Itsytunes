@@ -35,6 +35,10 @@ struct AlbumListView: View {
     /// Loose songs in the library folder join only by artist. Sorted by artist, then album.
     private var albums: [Album] { grouping(songs, root: library.folder?.path, group: Self.albums) }
     @State private var grouping = GroupingMemo<[Album]>()
+    /// The pointer is on a song or album outside the repeat boxes, so the others do not fade.
+    @State private var pointerOutsideRepeat = false
+    /// The songs outside the repeat boxes are faded: `RepeatBox.fades`, a moment late.
+    @State private var repeatFaded = false
 
     /// `root`: the library folder, whose loose songs join only by artist.
     static func albums(of songs: [Song], root: String?) -> [Album] {
@@ -83,20 +87,28 @@ struct AlbumListView: View {
         }
         // One highlighted row, even when the song table left several songs selected.
         let selected = rows.first { selection.contains($0.id) }?.id
+        // Album or artist mode: one repeat box around each album whose songs all repeat, and none around its rows.
+        let boxed = Set(albums.filter { player.repeatMode != .song && $0.tracks.allSatisfy(player.isRepeated) }.map(\.id))
+        let inside = Set(rows.filter { boxed.contains($0.id) || $0.id == $0.first.id && player.isRepeated($0.first) }.map(\.id))
+        let hiddenDividers = RepeatBox.hiddenDividers(albums.map(\.id), boxed: boxed)
+        let fades = RepeatBox.fades(inside: inside, selected: selected, pointerOutside: pointerOutsideRepeat)
         ScrollViewReader { scroller in
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(albums) { album in
                         AlbumSection(album: album, queue: queue, collapsed: collapsed.contains(album.id),
+                                     boxed: boxed.contains(album.id), faded: repeatFaded, pointerOutsideRepeat: $pointerOutsideRepeat,
                                      selected: selected, select: { selection = [$0] },
                                      showArtwork: showArtwork, tagAction: tagAction) { all in
                             collapsed.toggle(album.id, all: all ? albums.map(\.id) : nil)
                         }
-                        Divider().padding(.leading, 20)
+                        Divider().padding(.leading, 20).opacity(hiddenDividers.contains(album.id) ? 0 : 1)
                     }
                 }
                 .padding(.vertical, 4)
             }
+            .onHover { if !$0 { pointerOutsideRepeat = false } }
+            .repeatFadeTiming(fades, faded: $repeatFaded)
             .listKeyNavigation(rows, selection: $selection, collapsed: $collapsed, scroller: scroller) { player.play($0, queue: queue) }
             .task(id: scrollTarget) {
                 guard let target = scrollTarget else { return }
@@ -113,6 +125,11 @@ private struct AlbumSection: View {
     let album: AlbumListView.Album
     let queue: [Song]
     let collapsed: Bool
+    /// In a repeat box: all its songs repeat.
+    let boxed: Bool
+    /// The songs and albums outside the repeat boxes are faded.
+    let faded: Bool
+    @Binding var pointerOutsideRepeat: Bool
     /// ID of the highlighted row in the list.
     let selected: String?
     let select: (String) -> Void
@@ -130,14 +147,16 @@ private struct AlbumSection: View {
     }
 
     var body: some View {
+        let repeated = album.tracks.map(player.isRepeated)
+        let rowBoxes = RepeatBox.rows(boxed ? [] : repeated)
         HStack(alignment: .top, spacing: 16) {
             // Smaller when collapsed, so a folded list stays compact.
             ArtworkView(key: cover?.artworkKey, size: collapsed ? 44 : 88)
                 .onTapGesture { if let cover { showArtwork(cover) } }
+                .repeatFade(inside: boxed, faded: faded, pointerOutside: $pointerOutsideRepeat)
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
                     CollapseTitle(text: album.name, font: .system(size: 13, weight: .semibold), collapsed: collapsed, toggle: toggle)
-                        .repeatedHeader(album.tracks, selected: selected == album.id)
                     Text(details)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -146,13 +165,16 @@ private struct AlbumSection: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .selectableHeader(selected: selected == album.id) { select(album.id) }
+                .repeatFade(inside: boxed, faded: faded, pointerOutside: $pointerOutsideRepeat)
                 .padding(.bottom, collapsed ? 0 : 6)
                 // Numbered by position: track tags are often missing, or skip songs that are not in the library.
                 if !collapsed {
                     ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, song in
                         TrackRow(song: song, number: index + 1, showArtist: album.isCompilation, playing: player.current?.id == song.id,
-                                 repeated: player.isRepeated(song), selected: selected == song.id, select: { select(song.id) }) { player.play(song, queue: queue) }
+                                 chip: rowBoxes.isEmpty || rowBoxes[index]?.top != true ? nil : player.repeatMode, selected: selected == song.id, select: { select(song.id) }) { player.play(song, queue: queue) }
                             .contextMenu { TrackMenu(song: song, album: album.tracks, queue: queue, tagAction: tagAction) }
+                            .repeatBox(rowBoxes.isEmpty ? nil : rowBoxes[index])
+                            .repeatFade(inside: boxed || repeated[index], faded: faded, pointerOutside: $pointerOutsideRepeat)
                     }
                 }
             }
@@ -161,6 +183,7 @@ private struct AlbumSection: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 20)
         .padding(.vertical, collapsed ? 10 : 14)
+        .repeatBox(boxed ? RepeatBox() : nil, outset: CGSize(width: -10, height: -5), chip: player.repeatMode)
     }
 }
 
@@ -271,31 +294,12 @@ extension View {
             .simultaneousGesture(TapGesture().onEnded(select))
     }
 
-    /// Accent color on an album or artist title while repeat plays all of its songs (so also when it is folded).
-    /// `otherwise`: the title's usual style. Hierarchical, so it still turns white on the selection.
-    func repeatedHeader(_ songs: [Song], selected: Bool, otherwise: HierarchicalShapeStyle = .primary) -> some View {
-        modifier(RepeatedHeader(songs: songs, selected: selected, otherwise: otherwise))
-    }
-
     /// The one highlight in the album and artist lists: the selected row, in the accent color with white text,
     /// as in a system list.
     func selectionHighlight(_ selected: Bool) -> some View {
         background(selected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 4))
             // Secondary and tertiary text inside become shades of white.
             .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-    }
-}
-
-private struct RepeatedHeader: ViewModifier {
-    let songs: [Song]
-    let selected: Bool
-    let otherwise: HierarchicalShapeStyle
-    @Environment(Player.self) private var player
-
-    func body(content: Content) -> some View {
-        // Album or artist mode only: in song mode, the song's number already shows it.
-        let repeated = !selected && [.album, .artist].contains(player.repeatMode) && songs.allSatisfy(player.isRepeated)
-        content.foregroundStyle(repeated ? AnyShapeStyle(.tint) : AnyShapeStyle(otherwise))
     }
 }
 
@@ -421,8 +425,8 @@ struct TrackRow: View {
     let number: Int
     let showArtist: Bool
     let playing: Bool
-    /// One of the songs that repeat plays again: its number is in the accent color.
-    let repeated: Bool
+    /// The first row of a repeat box gets its chip.
+    let chip: RepeatMode?
     let selected: Bool
     let select: () -> Void
     let play: () -> Void
@@ -437,8 +441,7 @@ struct TrackRow: View {
                 }
             }
             .frame(width: 20, alignment: .trailing)
-            // Not on the selection, whose accent background would hide it.
-            .foregroundStyle(repeated && !selected ? AnyShapeStyle(.tint) : playing ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+            .foregroundStyle(playing ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
             Text(song.displayTitle)
                 .font(.system(size: 12))
                 .fontWeight(playing ? .semibold : .regular)
@@ -448,6 +451,7 @@ struct TrackRow: View {
             }
             if let page = song.bandcampLink { BandcampMark(page: page) }
             Spacer(minLength: 12)
+            if let chip { RepeatChip(mode: chip) }
             Text(formatTime(song.duration)).foregroundStyle(.secondary)
         }
         .font(.system(size: 11))

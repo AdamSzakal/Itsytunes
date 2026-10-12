@@ -41,7 +41,7 @@ struct HiddenRowSeparators: NSViewRepresentable {
         }
     }
 
-    private static func findTable(in root: NSView?) -> NSTableView? {
+    static func findTable(in root: NSView?) -> NSTableView? {
         var stack = root.map { [$0] } ?? []
         while let view = stack.popLast() {
             if let table = view as? NSTableView { return table }

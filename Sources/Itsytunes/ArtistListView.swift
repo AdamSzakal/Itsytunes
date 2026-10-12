@@ -24,6 +24,10 @@ struct ArtistListView: View {
 
     private var artists: [Artist] { grouping(songs, root: library.folder?.path, group: Self.artists) }
     @State private var grouping = GroupingMemo<[Artist]>()
+    /// The pointer is on a song, album or artist outside the repeat boxes, so the others do not fade.
+    @State private var pointerOutsideRepeat = false
+    /// The songs outside the repeat boxes are faded: `RepeatBox.fades`, a moment late.
+    @State private var repeatFaded = false
 
     /// ID of an album header in the artist list. Album IDs alone can repeat: a compilation is listed under each of its artists.
     static func albumID(_ album: AlbumListView.Album, of artist: Artist) -> String { "\(artist.id)|\(album.id)" }
@@ -54,20 +58,35 @@ struct ArtistListView: View {
         }
         // One highlighted row, even when the song table left several songs selected.
         let selected = rows.first { selection.contains($0.id) }?.id
+        // Artist mode: one repeat box around the artist. Album mode: one around the album. Otherwise around the rows.
+        let repeats = { (album: AlbumListView.Album) in album.tracks.allSatisfy(player.isRepeated) }
+        let boxedArtists = Set(player.repeatMode != .artist ? [] : artists.filter { $0.albums.allSatisfy(repeats) }.map(\.id))
+        let boxedAlbums = Set(player.repeatMode != .album ? [] : artists.flatMap { artist in
+            artist.albums.filter(repeats).map { Self.albumID($0, of: artist) }
+        })
+        let inside = Set(rows.filter { row in
+            boxedArtists.contains(row.group) || boxedAlbums.contains(row.id) || row.id == row.first.id && player.isRepeated(row.first)
+        }.map(\.id))
+        let hiddenDividers = RepeatBox.hiddenDividers(artists.map(\.id), boxed: boxedArtists)
+        let fades = RepeatBox.fades(inside: inside, selected: selected, pointerOutside: pointerOutsideRepeat)
         ScrollViewReader { scroller in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(artists) { artist in
                         ArtistSection(artist: artist, queue: queue, collapsed: collapsed.contains(artist.id),
+                                      boxed: boxedArtists.contains(artist.id), boxedAlbums: boxedAlbums,
+                                      faded: repeatFaded, pointerOutsideRepeat: $pointerOutsideRepeat,
                                       selected: selected, select: { selection = [$0] },
                                       showArtwork: showArtwork, tagAction: tagAction) { all in
                             collapsed.toggle(artist.id, all: all ? artists.map(\.id) : nil)
                         }
-                        Divider().padding(.leading, 20)
+                        Divider().padding(.leading, 20).opacity(hiddenDividers.contains(artist.id) ? 0 : 1)
                     }
                 }
                 .padding(.vertical, 4)
             }
+            .onHover { if !$0 { pointerOutsideRepeat = false } }
+            .repeatFadeTiming(fades, faded: $repeatFaded)
             .listKeyNavigation(rows, selection: $selection, collapsed: $collapsed, scroller: scroller) { player.play($0, queue: queue) }
             .task(id: scrollTarget) {
                 guard let target = scrollTarget else { return }
@@ -87,6 +106,13 @@ private struct ArtistSection: View {
     let artist: ArtistListView.Artist
     let queue: [Song]
     let collapsed: Bool
+    /// In a repeat box (artist mode).
+    let boxed: Bool
+    /// IDs of the albums in a repeat box (album mode), as `ArtistListView.albumID` makes them.
+    let boxedAlbums: Set<String>
+    /// The songs, albums and artists outside the repeat boxes are faded.
+    let faded: Bool
+    @Binding var pointerOutsideRepeat: Bool
     /// ID of the highlighted row in the list.
     let selected: String?
     let select: (String) -> Void
@@ -106,40 +132,49 @@ private struct ArtistSection: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 CollapseTitle(text: artist.name, font: .system(size: 15, weight: .semibold), collapsed: collapsed, toggle: toggle)
-                    .repeatedHeader(artist.albums.flatMap(\.tracks), selected: selected == artist.id)
                 Text(summary).font(.system(size: 11)).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }
             .selectableHeader(selected: selected == artist.id) { select(artist.id) }
+            .repeatFade(inside: boxed, faded: faded, pointerOutside: $pointerOutsideRepeat)
             ForEach(collapsed ? [] : artist.albums) { album in
+                let albumID = ArtistListView.albumID(album, of: artist)
+                let albumInside = boxed || boxedAlbums.contains(albumID)
+                let repeated = album.tracks.map(player.isRepeated)
+                let rowBoxes = RepeatBox.rows(albumInside ? [] : repeated)
                 HStack(alignment: .top, spacing: 12) {
                     let cover = album.tracks.first { $0.artworkKey != nil }
                     ArtworkView(key: cover?.artworkKey, size: 44)
                         .onTapGesture { if let cover { showArtwork(cover) } }
+                        .repeatFade(inside: albumInside, faded: faded, pointerOutside: $pointerOutsideRepeat)
                     VStack(alignment: .leading, spacing: 0) {
-                        let albumID = ArtistListView.albumID(album, of: artist)
                         Text([album.name, album.year].filter { !$0.isEmpty }.joined(separator: " · "))
                             .font(.system(size: 12, weight: .medium))
                             .lineLimit(1)
-                            .repeatedHeader(album.tracks, selected: selected == albumID, otherwise: .secondary)
+                            .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .selectableHeader(selected: selected == albumID) { select(albumID) }
+                            .repeatFade(inside: albumInside, faded: faded, pointerOutside: $pointerOutsideRepeat)
                             .id(albumID)
                             .padding(.bottom, 4)
                         ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, song in
                             TrackRow(song: song, number: index + 1, showArtist: false, playing: player.current?.id == song.id,
-                                     repeated: player.isRepeated(song), selected: selected == song.id, select: { select(song.id) }) {
+                                     chip: rowBoxes.isEmpty || rowBoxes[index]?.top != true ? nil : player.repeatMode, selected: selected == song.id, select: { select(song.id) }) {
                                 player.play(song, queue: queue)
                             }
                             .contextMenu { TrackMenu(song: song, album: album.tracks, queue: queue, tagAction: tagAction) }
+                            .repeatBox(rowBoxes.isEmpty ? nil : rowBoxes[index])
+                            .repeatFade(inside: albumInside || repeated[index], faded: faded, pointerOutside: $pointerOutsideRepeat)
                         }
                     }
                 }
+                .repeatBox(!boxed && albumInside ? RepeatBox() : nil, outset: CGSize(width: 6, height: 5), chip: player.repeatMode)
             }
         }
         // Collapsed, nothing else fills the width, and the list would center the section.
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 20)
         .padding(.vertical, collapsed ? 10 : 14)
+        .repeatBox(boxed ? RepeatBox() : nil, outset: CGSize(width: -10, height: -5), chip: player.repeatMode)
     }
 }
