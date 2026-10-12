@@ -60,9 +60,7 @@ final class MenuBarTicker: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        menu.addItem(MenuItem(player.isPlaying ? "Pause" : "Play") { [player] in player.toggle() })
-        menu.addItem(MenuItem("Next", enabled: player.current != nil) { [player] in player.next() })
-        menu.addItem(MenuItem("Previous", enabled: player.current != nil) { [player] in player.previous() })
+        menu.addPlayerControls(player)
         menu.addItem(.separator())
         menu.addItem(MenuItem("Show Itsytunes") { [weak self] in
             self?.openMainWindow?()
@@ -81,15 +79,34 @@ final class MenuBarTicker: NSObject, NSMenuDelegate {
     }
 }
 
+extension NSMenu {
+    /// Play/pause, next, previous, shuffle and repeat: the same in the menu bar menu and the Dock menu.
+    @MainActor func addPlayerControls(_ player: Player) {
+        addItem(MenuItem(player.isPlaying ? "Pause" : "Play") { player.toggle() })
+        addItem(MenuItem("Next", enabled: player.current != nil) { player.next() })
+        addItem(MenuItem("Previous", enabled: player.current != nil) { player.previous() })
+        addItem(.separator())
+        addItem(MenuItem("Shuffle", checked: player.shuffle) { player.shuffle.toggle() })
+        let repeatModes = NSMenu()
+        for mode in RepeatMode.allCases {
+            repeatModes.addItem(MenuItem(mode.rawValue.capitalized, checked: player.repeatMode == mode) { player.repeatMode = mode })
+        }
+        let repeatItem = NSMenuItem(title: "Repeat", action: nil, keyEquivalent: "")
+        repeatItem.submenu = repeatModes
+        addItem(repeatItem)
+    }
+}
+
 /// A menu item that runs a closure.
 private final class MenuItem: NSMenuItem {
     private let run: () -> Void
 
-    init(_ title: String, enabled: Bool = true, run: @escaping () -> Void) {
+    init(_ title: String, enabled: Bool = true, checked: Bool = false, run: @escaping () -> Void) {
         self.run = run
         super.init(title: title, action: #selector(runAction), keyEquivalent: "")
         target = self
         isEnabled = enabled
+        state = checked ? .on : .off
     }
 
     required init(coder: NSCoder) { fatalError("not used") }

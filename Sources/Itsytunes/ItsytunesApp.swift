@@ -15,6 +15,7 @@ struct ItsytunesApp: App {
         let player = Player()
         _player = State(initialValue: player)
         _ticker = State(initialValue: MenuBarTicker(player: player))
+        appDelegate.player = player
     }
 
     var body: some Scene {
@@ -57,6 +58,18 @@ struct ItsytunesApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Set by the app, for the Dock menu.
+    var player: Player?
+
     /// Music keeps playing after the window is closed; the Dock icon or Window menu opens it again.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// Asked each time the Dock menu opens, so it shows the player as it is now.
+    @MainActor func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        guard let player else { return nil }
+        let menu = NSMenu()
+        menu.autoenablesItems = false // Next and Previous are off with no song
+        menu.addPlayerControls(player)
+        return menu
+    }
 }
