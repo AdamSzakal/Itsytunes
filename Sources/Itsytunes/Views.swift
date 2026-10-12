@@ -117,6 +117,7 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.15), value: viewingArtwork?.id)
         .animation(.easeOut(duration: 0.1), value: showQuickSearch)
+        .background(SpaceToPlay(toggle: playOrPause))
         .onAppear(perform: resume)
         .modifier(SaveViewState(filter: filter, collapsed: collapsed, sortOrder: sortOrder))
         .onChange(of: downloader.added) {
@@ -294,6 +295,16 @@ struct ContentView: View {
         }
     }
 
+    /// Space. With nothing loaded, it plays the song selected in the table, and without one a random song.
+    private func playOrPause() {
+        let rows = layout == .songs && player.current == nil ? rows : []
+        if let song = rows.first(where: { selection.contains($0.id) }) {
+            player.play(song, queue: rows)
+        } else {
+            player.toggle()
+        }
+    }
+
     private func toggleAllGroups() {
         withAnimation(.easeOut(duration: 0.15)) {
             if !collapsed.isEmpty {
@@ -410,14 +421,6 @@ struct ContentView: View {
             .keyboardShortcut("i")
             .opacity(0)
         }
-        .onKeyPress(.space) {
-            if player.current == nil, let item = firstSong(selection) {
-                player.play(item, queue: rows)
-            } else {
-                player.toggle()
-            }
-            return .handled
-        }
         // A task, not onChange: the table may appear with the target already set (after a search is cleared).
         .task(id: scrollTarget) {
             guard let target = scrollTarget else { return }
@@ -493,6 +496,37 @@ extension Notification.Name {
     static let focusLibrarySearch = Notification.Name("focusLibrarySearch")
     /// Sent by Edit > Quick Search; the main window opens or closes the quick search.
     static let toggleQuickSearch = Notification.Name("toggleQuickSearch")
+}
+
+/// Space plays and pauses while the main window has the keyboard focus. Not a menu shortcut: the menu gets a key
+/// before the search fields do, so they could not get a space. A local monitor sees the key first, and leaves it
+/// to a field that is being edited.
+private struct SpaceToPlay: NSViewRepresentable {
+    let toggle: () -> Void
+
+    final class MonitorView: NSView {
+        var toggle: () -> Void = {}
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            monitor.map(NSEvent.removeMonitor)
+            monitor = nil
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, let window, event.window === window, event.keyCode == 49, // space
+                      event.modifierFlags.isDisjoint(with: [.command, .control, .option]),
+                      !(window.firstResponder is NSText) // the field editor of a text field
+                else { return event }
+                // Not on repeat: holding Space would play and pause over and over.
+                if !event.isARepeat { toggle() }
+                return nil
+            }
+        }
+    }
+
+    func makeNSView(context: Context) -> MonitorView { MonitorView() }
+
+    func updateNSView(_ view: MonitorView, context: Context) { view.toggle = toggle }
 }
 
 struct PlayerBar: View {
