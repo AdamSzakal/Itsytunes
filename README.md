@@ -2,7 +2,7 @@
 
 A small macOS music player for a local folder. It tags songs and finds album art automatically, and it can save audio from YouTube and sync your Bandcamp purchases.
 
-![Itsytunes in album view](docs/screenshot.png)
+<img width="1316" height="1005" alt="Screenshot 2026-10-15 at 10 21 40" src="https://github.com/user-attachments/assets/c897d6a8-7e03-4995-9704-d5388dc2b75f" />
 
 Work in progress. Try it: download `Itsytunes.zip` from [Releases](https://github.com/AdamSzakal/Itsytunes/releases).
 
