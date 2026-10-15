@@ -5,7 +5,7 @@
 #   SIGN_IDENTITY="My Cert" ./scripts/build-app.sh
 set -e
 cd "$(dirname "$0")/.."
-VERSION="${VERSION:-0.2.2}"
+VERSION="${VERSION:-0.3.0}"
 # Universal binary, so it runs on Apple Silicon and Intel Macs. Optimized for size, unused code dropped.
 swift build -c release --arch arm64 --arch x86_64 -Xswiftc -Osize -Xlinker -dead_strip
 APP="build/Itsytunes.app"
