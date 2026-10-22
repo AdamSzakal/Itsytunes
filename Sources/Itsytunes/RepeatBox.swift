@@ -41,31 +41,28 @@ struct RepeatBox: Shape {
     }
 }
 
-/// Names what repeats, in the top-right corner of a repeat box.
+/// Names what repeats, in the top-right corner of a repeat box. Its close button turns repeat off.
 struct RepeatChip: View {
+    @Environment(Player.self) private var player
     let mode: RepeatMode
 
     var body: some View {
-        // The repeat button's symbols.
-        Label("Repeating \(mode.rawValue)", systemImage: mode == .song ? "repeat.1" : "repeat")
-            .labelStyle(ChipLabelStyle())
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(.tint)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
-            // Opaque under the light blue, so it reads on a selected row too.
-            .background(Color.accentColor.opacity(0.15), in: Capsule())
-            .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
-            .fixedSize()
-    }
-
-    private struct ChipLabelStyle: LabelStyle {
-        func makeBody(configuration: Configuration) -> some View {
-            HStack(spacing: 3) {
-                configuration.icon.font(.system(size: 9, weight: .semibold))
-                configuration.title
+        HStack(spacing: 3) {
+            Text("Repeating \(mode.rawValue)")
+            Button { player.repeatMode = .off } label: {
+                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
             }
+            .buttonStyle(.plain)
+            .help("Stop repeating")
         }
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(.tint)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1)
+        // Opaque under the light blue, so it reads on a selected row too.
+        .background(Color.accentColor.opacity(0.15), in: Capsule())
+        .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
+        .fixedSize()
     }
 }
 
