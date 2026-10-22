@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Edits the tags of one or more songs by hand. With several songs, a field they do not agree on shows
-/// "Mixed" and only changes when typed into. Saving goes through `Library.write`, like the online fixes.
+/// "Mixed" and only changes when typed into, and a second tab finds and replaces text in one tag.
+/// Saving goes through `Library.write`, like the online fixes, and skips the songs that do not change.
 struct TagEditorSheet: View {
     let songs: [Song]
     @Environment(\.dismiss) private var dismiss
@@ -27,6 +28,8 @@ struct TagEditorSheet: View {
     @State private var album: Field
     /// Not in the library cache: read from the files when the sheet opens.
     @State private var albumArtist = Field([])
+    /// The album artist of each song, for the find and replace.
+    @State private var albumArtists: [String] = []
     @State private var albumArtistLoaded = false
     @State private var year: Field
     @State private var genre: Field
@@ -36,6 +39,9 @@ struct TagEditorSheet: View {
     /// A new cover for all songs.
     @State private var cover: Data?
     @State private var dropTargeted = false
+    /// Several songs: the fields, or the find and replace.
+    @State private var findReplaceTab = false
+    @State private var replace = FindReplace()
 
     init(songs: [Song]) {
         self.songs = songs
@@ -48,15 +54,39 @@ struct TagEditorSheet: View {
     }
 
     private var isBatch: Bool { songs.count > 1 }
-    private var anyEdited: Bool {
-        [title, artist, album, albumArtist, year, genre, track].contains(where: \.edited) || numberInOrder || cover != nil
+    /// The number of songs that saving changes.
+    private var changing: Int { songs.indices.filter { newTags($0) != nil }.count }
+
+    /// The text fields, by the tag they change.
+    private var edits: [(path: WritableKeyPath<Tags, String>, field: Field)] {
+        [(\.title, title), (\.artist, artist), (\.album, album), (\.albumArtist, albumArtist), (\.year, year), (\.genre, genre)]
     }
 
     var body: some View {
         VStack(spacing: 0) {
             header.padding(20)
+            if isBatch {
+                Picker("", selection: $findReplaceTab) {
+                    Text("Tags").tag(false)
+                    Text("Find and Replace").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .padding(.bottom, 12)
+            }
             Divider()
-            fields.padding(20)
+            // Both stay in place, so the sheet keeps its height when the tab changes.
+            ZStack(alignment: .top) {
+                fields.tab(shown: !findReplaceTab)
+                if isBatch {
+                    FindReplaceView(replace: $replace, values: songs.indices.map { value(replace.field, at: $0) },
+                                    fields: FindReplace.fields.filter { albumArtistLoaded || $0.path != \.albumArtist },
+                                    active: findReplaceTab)
+                        .tab(shown: findReplaceTab)
+                }
+            }
+            .padding(20)
             Divider()
             footer.padding(12)
         }
@@ -66,6 +96,7 @@ struct TagEditorSheet: View {
             var values: [String] = []
             for song in songs { values.append(await MetadataReader.read(song.url).albumArtist) }
             albumArtist = Field(values)
+            albumArtists = values
             albumArtistLoaded = true
         }
     }
@@ -237,34 +268,71 @@ struct TagEditorSheet: View {
                 .foregroundStyle(.secondary)
             Spacer()
             Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-            Button(isBatch ? "Save \(songs.count) Songs" : "Save", action: save)
+            let changing = changing
+            Button(!isBatch || changing == 0 ? "Save" : changing == 1 ? "Save 1 Song" : "Save \(changing) Songs", action: save)
                 .keyboardShortcut(.defaultAction)
-                .disabled(!anyEdited)
+                .disabled(changing == 0)
         }
     }
 
-    /// Only edited fields change. A field cleared by the user is removed from the file.
     private func save() {
-        let edits: [(WritableKeyPath<Tags, String>, Field)] = [
-            (\.title, title), (\.artist, artist), (\.album, album), (\.albumArtist, albumArtist), (\.year, year), (\.genre, genre),
-        ]
-        let proposals = songs.enumerated().map { index, song in
-            var tags = Tags(title: song.title, artist: song.artist, album: song.album, year: song.year, genre: song.genre, track: song.track)
-            var removing = Set<String>()
-            for (path, field) in edits where field.edited {
-                let value = field.value.trimmingCharacters(in: .whitespaces)
-                tags[keyPath: path] = value
-                if value.isEmpty, let id = ID3Writer.frameIDs[path] { removing.insert(id) }
-            }
-            if numberInOrder {
-                tags.track = index + 1
-            } else if track.edited {
-                tags.track = Int(track.value.trimmingCharacters(in: .whitespaces))
-                if tags.track == nil { removing.insert(ID3Writer.trackFrameID) }
-            }
-            return TagProposal(song: song, tags: tags, artworkURL: nil, artwork: cover, removing: removing)
+        let proposals = songs.indices.compactMap { index in
+            newTags(index).map { TagProposal(song: songs[index], tags: $0.tags, artworkURL: nil, artwork: cover, removing: $0.removing) }
         }
         library.write(proposals, verb: "Saving", keeping: [])
         dismiss()
+    }
+
+    /// The new tags of the song at `index`, or nil when they stay the same: the edited fields change, then the find
+    /// and replace. `removing`: the ID3 frames of the tags left empty, which are removed from the file.
+    private func newTags(_ index: Int) -> (tags: Tags, removing: Set<String>)? {
+        let song = songs[index]
+        var tags = Tags(title: song.title, artist: song.artist, album: song.album, year: song.year, genre: song.genre, track: song.track)
+        var removing = Set<String>()
+        var changed = cover != nil
+        let replacing = { (path: WritableKeyPath<Tags, String>) in replace.isActive && path == replace.field }
+        for (path, field) in edits where field.edited || replacing(path) {
+            var value = value(path, at: index)
+            if replacing(path) { value = replace.apply(to: value) }
+            value = value.trimmingCharacters(in: .whitespaces)
+            // The album artist is not in `tags` either: it is only written when it changes.
+            guard value != currentValue(path, at: index) else { continue }
+            tags[keyPath: path] = value
+            changed = true
+            if value.isEmpty, let id = ID3Writer.frameIDs[path] { removing.insert(id) }
+        }
+        if numberInOrder {
+            tags.track = index + 1
+        } else if track.edited {
+            tags.track = Int(track.value.trimmingCharacters(in: .whitespaces))
+            if tags.track == nil { removing.insert(ID3Writer.trackFrameID) }
+        }
+        return changed || tags.track != song.track ? (tags, removing) : nil
+    }
+
+    /// A tag of the song at `index` before the find and replace: the text typed into its field, or the song's own.
+    private func value(_ path: WritableKeyPath<Tags, String>, at index: Int) -> String {
+        if let field = edits.first(where: { $0.path == path })?.field, field.edited { return field.value }
+        return currentValue(path, at: index)
+    }
+
+    /// A tag of the song at `index` as it is now. The album artist is empty until it is read from the file.
+    private func currentValue(_ path: WritableKeyPath<Tags, String>, at index: Int) -> String {
+        let song = songs[index]
+        switch path {
+        case \.title: return song.title
+        case \.artist: return song.artist
+        case \.album: return song.album
+        case \.year: return song.year
+        case \.genre: return song.genre
+        default: return albumArtists.indices.contains(index) ? albumArtists[index] : ""
+        }
+    }
+}
+
+private extension View {
+    /// One tab of the editor. A hidden tab keeps its size, and its fields cannot take the keyboard focus.
+    func tab(shown: Bool) -> some View {
+        opacity(shown ? 1 : 0).disabled(!shown).accessibilityHidden(!shown)
     }
 }
