@@ -67,6 +67,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set by the app, for the Dock menu.
     var player: Player?
 
+    /// ⌘← and ⌘→ move to the start and end of a text field, but they are also Previous and Next in the Controls
+    /// menu, and the menu gets a key before a field does: typing in a field changed the song. A local monitor sees
+    /// the key first, and gives it to the field that is being edited.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard let editor = event.window?.firstResponder as? NSText, // the field editor of a text field
+                  event.keyCode == 123 || event.keyCode == 124, // left, right
+                  event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command
+            else { return event }
+            editor.keyDown(with: event)
+            return nil
+        }
+    }
+
     /// Music keeps playing after the window is closed; the Dock icon or Window menu opens it again.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
