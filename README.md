@@ -25,7 +25,7 @@ Work in progress. Try it: download `Itsytunes.zip` from [Releases](https://githu
 - Cleans up titles: removes upload noise like video IDs, "(Official Video)" and track numbers. You check each change before it is saved.
 - Fix Tags looks up selected songs or albums online again.
 - Edit the tags of many songs at once (⌘I). Select them with ⌘-click and ⇧-click in every view; a selected album or artist includes all its songs.
-- Find and replace text in one tag of the selected songs, as plain text or with a regular expression (`\d+` finds any number), with a preview of the new tags. Only the songs that change are written.
+- Find and replace text in one tag of the selected songs, as plain text or with a regular expression (`\d+` finds any number), with a preview of each tag before and after the change. Only the songs that change are written.
 
 **YouTube** (⌘K)
 - Search YouTube and save the audio of a video into your folder.

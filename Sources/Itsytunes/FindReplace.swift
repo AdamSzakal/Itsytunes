@@ -37,8 +37,8 @@ struct FindReplace {
     }
 }
 
-/// The find and replace of the tag editor, laid out as Figma's batch rename: the new tags on the left, the fields
-/// on the right.
+/// The find and replace of the tag editor: the fields on top, and below them the tag of each song before and after
+/// the change, side by side.
 struct FindReplaceView: View {
     @Binding var replace: FindReplace
     /// The tag of each song before the change, in list order.
@@ -50,9 +50,9 @@ struct FindReplaceView: View {
     @FocusState private var findFocused: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 20) {
+        VStack(alignment: .leading, spacing: 14) {
+            controls
             preview
-            controls.frame(width: 280)
         }
         .task(id: active) { if active { findFocused = true } }
     }
@@ -61,50 +61,78 @@ struct FindReplaceView: View {
         let new = values.map(replace.apply)
         let changes = values.indices.filter { new[$0] != values[$0] }.count
         return VStack(alignment: .leading, spacing: 6) {
-            Text(changes == 0 ? "Preview" : "\(changes) of \(values.count) songs change")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
+            row(Text("Before"), HStack {
+                Text("After")
+                Spacer()
+                if changes > 0 { Text("\(changes) of \(values.count) songs change") }
+            }, arrow: false)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.secondary)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 5) {
                     ForEach(values.indices, id: \.self) { i in
+                        let changed = new[i] != values[i]
                         // Unchanged tags are dim, so the songs that change stand out.
-                        Text(new[i].isEmpty ? "none" : new[i])
-                            .italic(new[i].isEmpty)
-                            .foregroundStyle(new[i] != values[i] ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
-                            .lineLimit(1)
-                            .help(new[i] == values[i] ? values[i] : "\(values[i]) → \(new[i].isEmpty ? "none" : new[i])")
+                        row(tag(values[i]).foregroundStyle(changed ? .secondary : .tertiary),
+                            tag(new[i]).foregroundStyle(changed ? .primary : .tertiary),
+                            arrow: changed)
+                            .help(changed ? "\(values[i]) → \(new[i].isEmpty ? "none" : new[i])" : values[i])
                     }
                 }
                 .font(.system(size: 12))
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(height: 150)
+            .frame(height: 110)
         }
+    }
+
+    /// One line of the preview: the tag before the change and after it, in columns of the same width.
+    private func row(_ before: some View, _ after: some View, arrow: Bool) -> some View {
+        HStack(spacing: 8) {
+            before.frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: "arrow.right")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+                .opacity(arrow ? 1 : 0)
+            after.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func tag(_ value: String) -> some View {
+        Text(value.isEmpty ? "none" : value)
+            .italic(value.isEmpty)
+            .lineLimit(1)
     }
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("Find in", selection: $replace.field) {
-                ForEach(fields, id: \.path) { Text($0.name).tag($0.path) }
+            HStack {
+                Picker("Find in", selection: $replace.field) {
+                    ForEach(fields, id: \.path) { Text($0.name).tag($0.path) }
+                }
+                .fixedSize()
+                Spacer()
+                Toggle("Regular expression", isOn: $replace.isRegex)
+                    .toggleStyle(.checkbox)
             }
-            .fixedSize()
-            TextField("Find", text: $replace.find)
-                .focused($findFocused)
-                .help(replace.isRegex ? "A regular expression, not case-sensitive" : "Plain text, not case-sensitive")
-            TextField("Replace with", text: $replace.replacement)
-            Toggle("Regular expression", isOn: $replace.isRegex)
-                .toggleStyle(.checkbox)
-            if replace.isInvalid {
-                Text("This is not a valid regular expression.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.red)
-            } else if replace.isRegex {
-                // The few patterns most tag fixes need.
-                Text(verbatim: "\\d+ a number   .* any text   ^ start   $ end\n( ) a group, put back with $1 in Replace with")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+            HStack(spacing: 10) {
+                TextField("Find", text: $replace.find)
+                    .focused($findFocused)
+                    .help(replace.isRegex ? "A regular expression, not case-sensitive" : "Plain text, not case-sensitive")
+                TextField("Replace with", text: $replace.replacement)
             }
+            Group {
+                if replace.isInvalid {
+                    Text("This is not a valid regular expression.")
+                        .foregroundStyle(.red)
+                } else {
+                    // The few patterns most tag fixes need. Only hidden for plain text, so the sheet keeps its height.
+                    Text(verbatim: "\\d+ a number   .* any text   ^ start   $ end   ( ) a group, put back with $1")
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .opacity(replace.isRegex ? 1 : 0)
+                }
+            }
+            .font(.system(size: 11))
         }
         .textFieldStyle(.roundedBorder)
     }
