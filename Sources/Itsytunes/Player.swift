@@ -23,9 +23,16 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         didSet { UserDefaults.standard.set(repeatMode.rawValue, forKey: "repeatMode") }
     }
 
+    /// The playlist that the queue is, if any: repeat then repeats it as a whole.
+    private(set) var playlist: Playlist.ID?
+
     @ObservationIgnored private var audio: AVAudioPlayer?
     /// The table rows (sorted and filtered) at the time the user started playback.
-    @ObservationIgnored private var queue: [Song] = []
+    @ObservationIgnored private var queue: [Song] = [] {
+        didSet { queueIDs = Set(queue.map(\.id)) }
+    }
+    /// For `isRepeated`, which runs for every song in the lists.
+    @ObservationIgnored private var queueIDs: Set<Song.ID> = []
     @ObservationIgnored private var timer: Timer?
     /// Opens the file of the song that `start` was last given.
     @ObservationIgnored private var loading: Task<Void, Never>?
@@ -37,6 +44,7 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         var song: String
         var time: Double
         var queue: [String]
+        var playlist: Playlist.ID?
     }
     private static let sessionFile = AppPaths.support.appendingPathComponent("session.json")
 
@@ -58,6 +66,8 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         let byPath = Dictionary(songs.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
         guard let song = byPath[session.song] else { return }
         queue = session.queue.compactMap { byPath[$0] }
+        playlist = session.playlist
+        fitRepeatMode()
         start(song, at: session.time, playing: false)
     }
 
@@ -66,7 +76,7 @@ final class Player: NSObject, AVAudioPlayerDelegate {
             try? FileManager.default.removeItem(at: Self.sessionFile)
             return
         }
-        let session = Session(song: current.path, time: audio?.currentTime ?? currentTime, queue: queue.map(\.path))
+        let session = Session(song: current.path, time: audio?.currentTime ?? currentTime, queue: queue.map(\.path), playlist: playlist)
         try? JSONEncoder().encode(session).write(to: Self.sessionFile)
     }
 
@@ -83,9 +93,27 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         }
     }
 
-    func play(_ song: Song, queue: [Song]) {
+    /// `playlist`: the playlist that the queue is, if any.
+    func play(_ song: Song, queue: [Song], playlist: Playlist.ID? = nil) {
         self.queue = queue
+        self.playlist = playlist
+        fitRepeatMode()
         start(song)
+    }
+
+    /// The modes the repeat button goes through: a playlist repeats as a whole, not by album or artist.
+    var repeatModes: [RepeatMode] { playlist == nil ? [.off, .song, .album, .artist] : [.off, .song, .playlist] }
+
+    /// For the repeat button: the next of `repeatModes`.
+    func nextRepeatMode() {
+        let modes = repeatModes
+        repeatMode = modes[((modes.firstIndex(of: repeatMode) ?? -1) + 1) % modes.count]
+    }
+
+    /// Keeps repeating a group when the queue changes kind: album and artist repeat become playlist repeat for a
+    /// playlist, and playlist repeat becomes album repeat for the other lists.
+    private func fitRepeatMode() {
+        if !repeatModes.contains(repeatMode) { repeatMode = playlist == nil ? .album : .playlist }
     }
 
     /// Play/pause. With nothing loaded yet, starts a random song in shuffle mode.
@@ -200,13 +228,14 @@ final class Player: NSObject, AVAudioPlayerDelegate {
         start(pool[target])
     }
 
-    /// True for the songs that the repeat mode plays over and over: the current song, or all songs of its album
-    /// or artist. An album matches as `AlbumListView.albums` groups it: same name, and same artist or folder.
+    /// True for the songs that the repeat mode plays over and over: the current song, all songs of its album
+    /// or artist, or the playlist. An album matches as `AlbumListView.albums` groups it: same name, and same artist or folder.
     func isRepeated(_ song: Song) -> Bool {
         guard let current else { return false }
         switch repeatMode {
         case .off: return false
         case .song: return song.id == current.id
+        case .playlist: return playlist != nil && queueIDs.contains(song.id)
         case .artist: return song.artist.lowercased() == current.artist.lowercased()
         case .album:
             guard song.album.lowercased() == current.album.lowercased() else { return false }
@@ -263,12 +292,7 @@ final class Player: NSObject, AVAudioPlayerDelegate {
     }
 }
 
-/// What the repeat button repeats. Each click moves to the next mode.
-enum RepeatMode: String, CaseIterable {
-    case off, song, album, artist
-
-    var next: RepeatMode {
-        let all = Self.allCases
-        return all[(all.firstIndex(of: self)! + 1) % all.count]
-    }
+/// What the repeat button repeats. Each click moves to the next of `Player.repeatModes`.
+enum RepeatMode: String {
+    case off, song, album, artist, playlist
 }

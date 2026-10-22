@@ -10,14 +10,22 @@ Work in progress. Try it: download `Itsytunes.zip` from [Releases](https://githu
 
 **Library**
 - Plays every song in one folder and its subfolders. Works with Dropbox and iCloud folders; files that are only online are skipped unless you turn them on in Settings.
-- Three views: a song list with columns you can sort, move and hide, albums with their covers, or artists with their albums. A compilation stays one album.
+- Four views: a song list with columns you can sort, move and hide, albums with their covers, artists with their albums, or playlists. A compilation stays one album.
 - Filter to show only songs from Bandcamp, songs downloaded on this Mac, or songs that are only online in Dropbox.
 - Search with ⌘F. Click a cover to see it full size.
+
+**Playlists**
+- Right-click songs in any view and choose Add to Playlist, or make a new playlist from the selected songs (⇧⌘N).
+- Drag songs to change their order, or onto another playlist to add them there. Delete removes the selected songs from their playlist.
+- Repeat plays a playlist over and over.
+- Each playlist is an .m3u8 file in the Playlists folder of your music folder, so it syncs with Dropbox or iCloud and other players can open it. A song that was renamed or moved is found again by its artist, title and length.
 
 **Tags**
 - Fills in missing title, artist, album, year, genre, track number and cover from the iTunes catalogue. MP3 files get the tags written into them.
 - Cleans up titles: removes upload noise like video IDs, "(Official Video)" and track numbers. You check each change before it is saved.
 - Fix Tags looks up selected songs or albums online again.
+- Edit the tags of many songs at once (⌘I). Select them with ⌘-click and ⇧-click in every view; a selected album or artist includes all its songs.
+- Find and replace text in one tag of the selected songs, as plain text or with a regular expression (`\d+` finds any number), with a preview of the new tags. Only the songs that change are written.
 
 **YouTube** (⌘K)
 - Search YouTube and save the audio of a video into your folder.

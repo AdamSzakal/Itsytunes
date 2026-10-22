@@ -88,7 +88,7 @@ extension NSMenu {
         addItem(.separator())
         addItem(MenuItem("Shuffle", checked: player.shuffle) { player.shuffle.toggle() })
         let repeatModes = NSMenu()
-        for mode in RepeatMode.allCases {
+        for mode in player.repeatModes {
             repeatModes.addItem(MenuItem(mode.rawValue.capitalized, checked: player.repeatMode == mode) { player.repeatMode = mode })
         }
         let repeatItem = NSMenuItem(title: "Repeat", action: nil, keyEquivalent: "")

@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// How the library is shown: one flat table, or songs grouped under their album or artist.
+/// How the library is shown: one flat table, songs grouped under their album or artist, or the playlists.
 enum LibraryLayout: String, CaseIterable {
-    case songs, albums, artists
+    case songs, albums, artists, playlists
 }
 
 /// All songs grouped by album: cover and album details on the left, a compact track list on the right.
@@ -19,6 +19,8 @@ struct AlbumListView: View {
     let showArtwork: (Song) -> Void
     /// Opens the tag editor, or the review of online fixes or title clean-ups, for some songs.
     let tagAction: ([Song], TagAction) -> Void
+    /// The row a ⇧-click selects from.
+    @State private var anchor: String?
 
     struct Album: Identifiable {
         let id: String
@@ -77,6 +79,11 @@ struct AlbumListView: View {
         }
     }
 
+    /// The songs of the selected rows, in list order. A selected album stands for all its songs.
+    static func songs(selected: Set<Song.ID>, in albums: [Album]) -> [Song] {
+        albums.flatMap { selected.contains($0.id) ? $0.tracks : $0.tracks.filter { selected.contains($0.id) } }
+    }
+
     var body: some View {
         let albums = albums
         // Playback continues from one album into the next, in the order shown.
@@ -85,8 +92,9 @@ struct AlbumListView: View {
             [ListRow(id: album.id, first: album.tracks[0], group: album.id)]
                 + (collapsed.contains(album.id) ? [] : album.tracks.map { ListRow(song: $0, group: album.id) })
         }
-        // One highlighted row, even when the song table left several songs selected.
+        // The first selected row, for the repeat fade.
         let selected = rows.first { selection.contains($0.id) }?.id
+        let selectedSongs = Self.songs(selected: selection, in: albums)
         // Album or artist mode: one repeat box around each album whose songs all repeat, and none around its rows.
         let boxed = Set(albums.filter { player.repeatMode != .song && $0.tracks.allSatisfy(player.isRepeated) }.map(\.id))
         let inside = Set(rows.filter { boxed.contains($0.id) || $0.id == $0.first.id && player.isRepeated($0.first) }.map(\.id))
@@ -98,7 +106,8 @@ struct AlbumListView: View {
                     ForEach(albums) { album in
                         AlbumSection(album: album, queue: queue, collapsed: collapsed.contains(album.id),
                                      boxed: boxed.contains(album.id), faded: repeatFaded, pointerOutsideRepeat: $pointerOutsideRepeat,
-                                     selected: selected, select: { selection = [$0] },
+                                     selection: selection, selectedSongs: selectedSongs,
+                                     select: { selection.select($0, in: rows, anchor: &anchor) },
                                      showArtwork: showArtwork, tagAction: tagAction) { all in
                             collapsed.toggle(album.id, all: all ? albums.map(\.id) : nil)
                         }
@@ -109,7 +118,7 @@ struct AlbumListView: View {
             }
             .onHover { if !$0 { pointerOutsideRepeat = false } }
             .repeatFadeTiming(fades, faded: $repeatFaded)
-            .listKeyNavigation(rows, selection: $selection, collapsed: $collapsed, scroller: scroller) { player.play($0, queue: queue) }
+            .listKeyNavigation(rows, selection: $selection, collapsed: $collapsed, scroller: scroller) { player.play($0.first, queue: queue) }
             .task(id: scrollTarget) {
                 guard let target = scrollTarget else { return }
                 if let album = albums.first(where: { $0.id == target.id || $0.tracks.contains { $0.id == target.id } }) {
@@ -130,8 +139,10 @@ private struct AlbumSection: View {
     /// The songs and albums outside the repeat boxes are faded.
     let faded: Bool
     @Binding var pointerOutsideRepeat: Bool
-    /// ID of the highlighted row in the list.
-    let selected: String?
+    /// IDs of the highlighted rows in the list.
+    let selection: Set<Song.ID>
+    /// The songs of the selected rows, for the right-click menu.
+    let selectedSongs: [Song]
     let select: (String) -> Void
     let showArtwork: (Song) -> Void
     let tagAction: ([Song], TagAction) -> Void
@@ -164,15 +175,16 @@ private struct AlbumSection: View {
                         .padding(.leading, 14) // under the title, past the arrow
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .selectableHeader(selected: selected == album.id) { select(album.id) }
+                .selectableHeader(selected: selection.contains(album.id)) { select(album.id) }
                 .repeatFade(inside: boxed, faded: faded, pointerOutside: $pointerOutsideRepeat)
                 .padding(.bottom, collapsed ? 0 : 6)
                 // Numbered by position: track tags are often missing, or skip songs that are not in the library.
                 if !collapsed {
                     ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, song in
                         TrackRow(song: song, number: index + 1, showArtist: album.isCompilation, playing: player.current?.id == song.id,
-                                 chip: rowBoxes.isEmpty || rowBoxes[index]?.top != true ? nil : player.repeatMode, selected: selected == song.id, select: { select(song.id) }) { player.play(song, queue: queue) }
-                            .contextMenu { TrackMenu(song: song, album: album.tracks, queue: queue, tagAction: tagAction) }
+                                 chip: rowBoxes.isEmpty || rowBoxes[index]?.top != true ? nil : player.repeatMode, selected: selection.contains(song.id),
+                                 joined: selection.neighbors(of: index, in: album.tracks), select: { select(song.id) }) { player.play(song, queue: queue) }
+                            .contextMenu { TrackMenu(song: song, album: album.tracks, selected: selectedSongs, queue: queue, tagAction: tagAction) }
                             .repeatBox(rowBoxes.isEmpty ? nil : rowBoxes[index])
                             .repeatFade(inside: boxed || repeated[index], faded: faded, pointerOutside: $pointerOutsideRepeat)
                     }
@@ -227,25 +239,58 @@ extension Set<String> {
     }
 }
 
-/// A row the arrow keys can select in the album and artist lists: a song, or an album or artist header.
+/// A row the arrow keys can select in the album, artist and playlist lists: a song, or an album, artist or playlist header.
 struct ListRow {
     let id: String
-    /// What Return plays: the song itself, or the first song of the album or artist.
+    /// What Return plays: the song itself, or the first song of the album, artist or playlist.
     let first: Song
-    /// The album in the album list, or the artist in the artist list, that the row is in (or is). ←/→ fold it.
+    /// The album, artist or playlist that the row is in (or is). ←/→ fold it.
     let group: String
+    /// A song, not a header.
+    let isSong: Bool
 
-    /// The album or artist header itself: ⇧↑/⇧↓ go from one to the next.
+    /// The album, artist or playlist header itself: ⇧↑/⇧↓ go from one to the next.
     var isGroup: Bool { id == group }
 
     init(id: String, first: Song, group: String) {
         self.id = id
         self.first = first
         self.group = group
+        isSong = false
     }
 
-    init(song: Song, group: String) {
-        self.init(id: song.id, first: song, group: group)
+    /// `id`: the song's own, or one that tells apart the same song in two playlists.
+    init(song: Song, group: String, id: String? = nil) {
+        self.id = id ?? song.id
+        first = song
+        self.group = group
+        isSong = true
+    }
+}
+
+extension Set<String> {
+    /// A click on a row of the album or artist list, as in Finder. It selects only that row, ⌘-click adds or removes
+    /// it, and ⇧-click selects the rows from `anchor`, the row last clicked, to this one. Between the two, an album or
+    /// artist is selected only when folded: otherwise its songs are, so the range does not grow past them.
+    /// `rows`: the selectable rows in the order shown.
+    mutating func select(_ id: String, in rows: [ListRow], anchor: inout String?) {
+        let flags = NSEvent.modifierFlags
+        // After the arrow keys, the anchor is no longer selected: the range starts at the selection.
+        if flags.contains(.shift),
+           let from = rows.firstIndex(where: { $0.id == anchor && contains($0.id) }) ?? rows.firstIndex(where: { contains($0.id) }),
+           let to = rows.firstIndex(where: { $0.id == id }) {
+            self = Set((Swift.min(from, to)...Swift.max(from, to)).filter { i in
+                let folded = i + 1 == rows.count || rows[i + 1].group != rows[i].group
+                return i == from || i == to || rows[i].isSong || folded
+            }.map { rows[$0].id })
+            return
+        }
+        if !flags.contains(.command) {
+            self = [id]
+        } else if remove(id) == nil {
+            insert(id)
+        }
+        anchor = id
     }
 }
 
@@ -274,11 +319,11 @@ extension View {
     /// Arrow keys for the album and artist lists. ↑/↓ select the previous or next row, past the songs of folded
     /// groups. ⇧↑/⇧↓ select the previous or next album or artist (⇧↑ first the one the selection is in).
     /// →/← unfold or fold the album or artist the selection is in; with Option, all of them, as Option-click does.
-    /// Return plays the selected song, or the selected album or artist from its first song.
-    /// `rows`: the selectable rows in the order shown.
+    /// Return plays the selected song, or the selected album or artist from its first song (`play` gets its row).
+    /// Delete calls `delete`, where there is one. `rows`: the selectable rows in the order shown.
     func listKeyNavigation(_ rows: [ListRow], selection: Binding<Set<Song.ID>>, collapsed: Binding<Set<String>>,
-                           scroller: ScrollViewProxy, play: @escaping (Song) -> Void) -> some View {
-        modifier(ListKeyNavigation(rows: rows, selection: selection, collapsed: collapsed, scroller: scroller, play: play))
+                           scroller: ScrollViewProxy, play: @escaping (ListRow) -> Void, delete: (() -> Void)? = nil) -> some View {
+        modifier(ListKeyNavigation(rows: rows, selection: selection, collapsed: collapsed, scroller: scroller, play: play, delete: delete))
     }
 
     /// Highlights an album or artist header while it is selected. A click selects it.
@@ -294,12 +339,28 @@ extension View {
             .simultaneousGesture(TapGesture().onEnded(select))
     }
 
-    /// The one highlight in the album and artist lists: the selected row, in the accent color with white text,
-    /// as in a system list.
-    func selectionHighlight(_ selected: Bool) -> some View {
-        background(selected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 4))
-            // Secondary and tertiary text inside become shades of white.
-            .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+    /// The one highlight in the album and artist lists: the selected rows, in the accent color with white text,
+    /// as in a system list. `joined`: the rows above and below are selected too, and the highlights join into one.
+    func selectionHighlight(_ selected: Bool, joined: (above: Bool, below: Bool) = (false, false)) -> some View {
+        background {
+            if selected {
+                UnevenRoundedRectangle(topLeadingRadius: joined.above ? 0 : 4, bottomLeadingRadius: joined.below ? 0 : 4,
+                                       bottomTrailingRadius: joined.below ? 0 : 4, topTrailingRadius: joined.above ? 0 : 4)
+                    .fill(Color.accentColor)
+                    // Under the next row by a point: edges that meet between two pixels left a dark seam.
+                    .padding(.bottom, joined.below ? -1 : 0)
+            }
+        }
+        // Secondary and tertiary text inside become shades of white.
+        .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+    }
+}
+
+extension Set<String> {
+    /// Whether the songs before and after the one at `index` are selected too, for `selectionHighlight`.
+    /// `id`: a song's row ID, when it is not the song's own.
+    func neighbors(of index: Int, in songs: [Song], id: (Song) -> String = \.id) -> (above: Bool, below: Bool) {
+        (index > 0 && contains(id(songs[index - 1])), index + 1 < songs.count && contains(id(songs[index + 1])))
     }
 }
 
@@ -308,7 +369,8 @@ private struct ListKeyNavigation: ViewModifier {
     @Binding var selection: Set<Song.ID>
     @Binding var collapsed: Set<String>
     let scroller: ScrollViewProxy
-    let play: (Song) -> Void
+    let play: (ListRow) -> Void
+    let delete: (() -> Void)?
     func body(content: Content) -> some View {
         content.background(KeyCatcher(focusOn: selection, onKey: handle))
     }
@@ -325,7 +387,10 @@ private struct ListKeyNavigation: ViewModifier {
         case 36, 76: // return, keypad enter
             // Not on repeat: holding Return would start the song over and over.
             guard !event.isARepeat, let row = rows.first(where: { selection.contains($0.id) }) else { return false }
-            play(row.first)
+            play(row)
+        case 51, 117: // delete, forward delete
+            guard let delete, !event.isARepeat else { return false }
+            delete()
         default:
             return false
         }
@@ -399,22 +464,28 @@ final class GroupingMemo<Value> {
     }
 }
 
-/// Right-click menu of a song in the album and artist lists.
+/// Right-click menu of a song in the album and artist lists. On a selected song, it acts on all selected songs.
 struct TrackMenu: View {
     let song: Song
     let album: [Song]
+    /// The songs of the selected rows.
+    let selected: [Song]
     let queue: [Song]
     let tagAction: ([Song], TagAction) -> Void
     @Environment(Player.self) private var player
 
     var body: some View {
+        let items = selected.contains { $0.id == song.id } ? selected : [song]
         Button("Play") { player.play(song, queue: queue) }
-        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([song.url]) }
+        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(items.map(\.url)) }
         Divider()
-        Button("Edit Tags…") { tagAction([song], .edit) }
+        AddToPlaylistMenu(songs: items)
+        Divider()
+        Button(items.count == 1 ? "Edit Tags…" : "Edit Tags of \(items.count) Songs…") { tagAction(items, .edit) }
+            .keyboardShortcut("i")
         Button("Edit Tags of Album…") { tagAction(album, .edit) }
         Divider()
-        Button("Fix Tags…") { tagAction([song], .fixOnline) }
+        Button(items.count == 1 ? "Fix Tags…" : "Fix Tags of \(items.count) Songs…") { tagAction(items, .fixOnline) }
         Button("Fix Tags of Album…") { tagAction(album, .fixOnline) }
         Button("Clean Up Titles of Album…") { tagAction(album, .cleanUp) }
     }
@@ -428,6 +499,10 @@ struct TrackRow: View {
     /// The first row of a repeat box gets its chip.
     let chip: RepeatMode?
     let selected: Bool
+    /// The rows above and below are selected too.
+    var joined: (above: Bool, below: Bool) = (false, false)
+    /// To scroll to the row; the song's ID when nil.
+    var rowID: String?
     let select: () -> Void
     let play: () -> Void
 
@@ -458,11 +533,11 @@ struct TrackRow: View {
         .monospacedDigit()
         .padding(.horizontal, 6)
         .frame(height: 22)
-        .selectionHighlight(selected)
+        .selectionHighlight(selected, joined: joined)
         .contentShape(Rectangle())
         .onTapGesture(count: 2, perform: play)
         // Simultaneous, so a click selects at once and does not wait to see if it becomes a double-click.
         .simultaneousGesture(TapGesture().onEnded(select))
-        .id(song.id) // so the arrow keys can scroll to the row
+        .id(rowID ?? song.id) // so the arrow keys can scroll to the row
     }
 }

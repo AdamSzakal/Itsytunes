@@ -5,16 +5,18 @@ struct ContentView: View {
     @Environment(Player.self) private var player
     @Environment(Downloader.self) private var downloader
     @Environment(BandcampSync.self) private var bandcampSync
-    /// Selected songs. In the album and artist lists, it can instead hold the ID of the selected album or artist,
-    /// which the song table ignores.
+    @Environment(PlaylistStore.self) private var playlists
+    /// Selected songs. In the album, artist and playlist lists, it can instead hold the ID of the selected album,
+    /// artist or playlist, or of a song's row in a playlist, which the song table ignores.
     @State private var selection: Set<Song.ID> = []
     /// Downloaded songs to show once the library has scanned them.
     @State private var pendingReveal: Set<Song.ID> = []
-    /// Song, album or artist to scroll to in the table or the album and artist lists.
+    /// Song, album, artist or playlist to scroll to in the table or the lists.
     @State private var scrollTarget: ScrollTarget?
-    /// Albums and artists shown without their songs, in the album and artist views.
+    /// Albums, artists and playlists shown without their songs, in their views.
     @State private var collapsed = Set(UserDefaults.standard.stringArray(forKey: "collapsed") ?? [])
     @State private var tagRequest: TagRequest?
+    @State private var playlistSheet: PlaylistNameRequest?
     @AppStorage("libraryLayout") private var layout = LibraryLayout.songs
     @AppStorage("search") private var search = ""
     /// Saved, so the app opens as it was left. The filter bar then opens too, so the hidden songs are no surprise.
@@ -48,6 +50,23 @@ struct ContentView: View {
     }
 
     private var rows: [Song] { matches.sorted(using: sortOrder) }
+
+    /// The selected songs in the order shown. A selected album, artist or playlist stands for all its songs.
+    private var selectedSongs: [Song] {
+        let root = library.folder?.path
+        switch layout {
+        case .songs: return rows.filter { selection.contains($0.id) }
+        case .albums: return AlbumListView.songs(selected: selection, in: AlbumListView.albums(of: matches, root: root))
+        case .artists: return ArtistListView.songs(selected: selection, in: ArtistListView.artists(of: matches, root: root))
+        case .playlists: return PlaylistListView.songs(selected: selection, in: playlistSections)
+        }
+    }
+
+    /// The playlists as their view lists them.
+    private var playlistSections: [PlaylistListView.Section] {
+        PlaylistListView.sections(playlists.playlists, index: SongIndex(library.songs),
+                                  shown: PlaylistListView.shown(matches, in: library.songs))
+    }
 
     /// "Parent › Folder", so the button reads as a chosen folder and not only a name.
     private var folderLabel: String {
@@ -95,11 +114,16 @@ struct ContentView: View {
                 Group {
                     if layout == .artists {
                         ArtistListView(songs: matches, selection: $selection, scrollTarget: $scrollTarget, collapsed: $collapsed, showArtwork: { viewingArtwork = $0 }) { tagRequest = TagRequest(songs: $0, action: $1) }
+                    } else if layout == .playlists {
+                        PlaylistListView(songs: matches, selection: $selection, scrollTarget: $scrollTarget, collapsed: $collapsed, showArtwork: { viewingArtwork = $0 }) { tagRequest = TagRequest(songs: $0, action: $1) }
                     } else {
                         AlbumListView(songs: matches, selection: $selection, scrollTarget: $scrollTarget, collapsed: $collapsed, showArtwork: { viewingArtwork = $0 }) { tagRequest = TagRequest(songs: $0, action: $1) }
                     }
                 }
-                .overlay(alignment: .topTrailing) { collapseAllButton }
+                .overlay(alignment: .topTrailing) {
+                    // The empty playlist view has its own New Playlist button, and nothing to fold.
+                    if layout != .playlists || !playlists.playlists.isEmpty { listButtons }
+                }
             }
             }
             // Always fill the space: the empty states only take their own height, which moved the player bar up.
@@ -122,7 +146,25 @@ struct ContentView: View {
         .animation(.easeOut(duration: 0.15), value: viewingArtwork?.id)
         .animation(.easeOut(duration: 0.1), value: showQuickSearch)
         .background(SpaceToPlay(toggle: playOrPause))
+        .background {
+            // Invisible button, so ⌘I edits the selected songs (a context menu's shortcut only shows the key).
+            Button("Edit Tags") {
+                let songs = selectedSongs
+                if !songs.isEmpty { tagRequest = TagRequest(songs: songs, action: .edit) }
+            }
+            .keyboardShortcut("i")
+            .opacity(0)
+        }
         .onAppear(perform: resume)
+        // After each scan, which a change of a playlist file in another app or on another Mac starts too.
+        .onChange(of: library.scanStatus, initial: true) {
+            if library.scanStatus == nil { playlists.load(library.folder) }
+        }
+        .environment(\.playlistSheet) { playlistSheet = $0 }
+        .sheet(item: $playlistSheet) { PlaylistNameSheet(request: $0) }
+        .onReceive(NotificationCenter.default.publisher(for: .newPlaylistFromSelection)) { _ in
+            if library.folder != nil { playlistSheet = PlaylistNameRequest(songs: selectedSongs) }
+        }
         .modifier(SaveViewState(filter: filter, collapsed: collapsed, sortOrder: sortOrder))
         .onChange(of: downloader.added) {
             pendingReveal = Set(downloader.added.map(\.path))
@@ -176,9 +218,10 @@ struct ContentView: View {
                     Label("Songs", systemImage: "list.bullet").tag(LibraryLayout.songs)
                     Label("Albums", systemImage: "square.stack").tag(LibraryLayout.albums)
                     Label("Artists", systemImage: "music.mic").tag(LibraryLayout.artists)
+                    Label("Playlists", systemImage: "music.note.list").tag(LibraryLayout.playlists)
                 }
                 .pickerStyle(.segmented)
-                .tooltip(segments: ["Songs", "Albums", "Artists"])
+                .tooltip(segments: ["Songs", "Albums", "Artists", "Playlists"])
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { showYouTube = true } label: { Label("Search YouTube", systemImage: "play.rectangle") }
@@ -225,6 +268,7 @@ struct ContentView: View {
     /// Carries on where the last session stopped: the song is loaded paused, and shown in the list.
     private func resume() {
         player.library = { [library] in library.songs }
+        playlists.library = { [library] in library.songs }
         player.restore(from: library.songs)
         if let song = player.current {
             selection = [song.id]
@@ -241,10 +285,28 @@ struct ContentView: View {
         pendingReveal = []
     }
 
-    /// Floats over the album and artist lists. Once anything is folded, it unfolds everything; then it folds everything.
-    private var collapseAllButton: some View {
-        Button(action: toggleAllGroups) {
-            Image(systemName: collapsed.isEmpty ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
+    /// Float over the album, artist and playlist lists. The fold button: once anything is folded, it unfolds everything;
+    /// then it folds everything. In the playlist list, a button for a new playlist comes first.
+    private var listButtons: some View {
+        HStack(spacing: 8) {
+            if layout == .playlists {
+                roundButton("plus", help: "New playlist") { playlistSheet = PlaylistNameRequest() }
+            }
+            let groups = switch layout {
+            case .artists: "artist"
+            case .playlists: "playlist"
+            default: "album"
+            }
+            roundButton(collapsed.isEmpty ? "rectangle.compress.vertical" : "rectangle.expand.vertical",
+                        help: collapsed.isEmpty ? "Hide the songs of every \(groups)" : "Show all songs", action: toggleAllGroups)
+        }
+        .padding(.top, 10)
+        .padding(.trailing, 18) // clear of the scroll bar
+    }
+
+    private func roundButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
                 .font(.system(size: 13))
                 .frame(width: 30, height: 30)
                 .background(.regularMaterial, in: Circle())
@@ -253,9 +315,7 @@ struct ContentView: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .help(collapsed.isEmpty ? "Hide the songs of every \(layout == .albums ? "album" : "artist")" : "Show all songs")
-        .padding(.top, 10)
-        .padding(.trailing, 18) // clear of the scroll bar
+        .help(help)
     }
 
     /// Goes to a quick search result in the current layout and selects it. A picked album or artist goes to the
@@ -270,6 +330,10 @@ struct ContentView: View {
         let first = songs[0].id
         let id: String?
         switch (layout, result) {
+        case (.playlists, _):
+            // The first row of the songs in a playlist; nothing when no playlist has them.
+            let ids = Set(songs.map(\.id))
+            id = playlistSections.lazy.compactMap { section in section.songs.first { ids.contains($0.id) }.map(section.rowID) }.first
         case (_, .song(let song)):
             id = song.id
         case (.songs, _):
@@ -315,8 +379,11 @@ struct ContentView: View {
                 collapsed = []
             } else {
                 let root = library.folder?.path
-                collapsed = Set(layout == .albums ? AlbumListView.albums(of: matches, root: root).map(\.id)
-                                                  : ArtistListView.artists(of: matches, root: root).map(\.id))
+                switch layout {
+                case .artists: collapsed = Set(ArtistListView.artists(of: matches, root: root).map(\.id))
+                case .playlists: collapsed = Set(playlists.playlists.map(\.id))
+                default: collapsed = Set(AlbumListView.albums(of: matches, root: root).map(\.id))
+                }
             }
         }
     }
@@ -414,6 +481,8 @@ struct ContentView: View {
                 Button("Play") { player.play(item, queue: rows) }
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(items.map(\.url)) }
                 Divider()
+                AddToPlaylistMenu(songs: items)
+                Divider()
                 Button(items.count == 1 ? "Edit Tags…" : "Edit Tags of \(items.count) Songs…") {
                     tagRequest = TagRequest(songs: items, action: .edit)
                 }
@@ -427,15 +496,6 @@ struct ContentView: View {
             }
         } primaryAction: { ids in
             if let item = firstSong(ids) { player.play(item, queue: rows) }
-        }
-        .background {
-            // Invisible button, so ⌘I edits the selected songs (a context menu's shortcut only shows the key).
-            Button("Edit Tags") {
-                let items = rows.filter { selection.contains($0.id) }
-                if !items.isEmpty { tagRequest = TagRequest(songs: items, action: .edit) }
-            }
-            .keyboardShortcut("i")
-            .opacity(0)
         }
         // A task, not onChange: the table may appear with the target already set (after a search is cleared).
         .task(id: scrollTarget) {
@@ -512,6 +572,8 @@ extension Notification.Name {
     static let focusLibrarySearch = Notification.Name("focusLibrarySearch")
     /// Sent by Edit > Quick Search; the main window opens or closes the quick search.
     static let toggleQuickSearch = Notification.Name("toggleQuickSearch")
+    /// Sent by File > New Playlist from Selection; the main window opens the sheet that names it.
+    static let newPlaylistFromSelection = Notification.Name("newPlaylistFromSelection")
 }
 
 /// Space plays and pauses while the main window has the keyboard focus. Not a menu shortcut: the menu gets a key
@@ -686,8 +748,8 @@ private struct ProgressRow: View {
     }
 }
 
-/// Cycles off → song → album → artist. A small badge tells album and artist apart, and the hover text names
-/// what plays again.
+/// Cycles off → song → album → artist, or off → song → playlist when a playlist plays. A small badge tells album,
+/// artist and playlist apart, and the hover text names what plays again.
 private struct RepeatButton: View {
     @Environment(Player.self) private var player
 
@@ -696,7 +758,7 @@ private struct RepeatButton: View {
             // A ring, like a CD: the "opticaldisc" symbol has too much detail at this size.
             Circle().strokeBorder(.tint, lineWidth: 2.5).frame(width: 8, height: 8)
         } else {
-            Image(systemName: "person.fill")
+            Image(systemName: player.repeatMode == .artist ? "person.fill" : "list.bullet")
                 .font(.system(size: 7, weight: .bold))
                 .foregroundStyle(.tint)
         }
@@ -708,15 +770,16 @@ private struct RepeatButton: View {
         case .song: "Repeat this song"
         case .album: "Repeat this album"
         case .artist: "Repeat all songs by this artist"
+        case .playlist: "Repeat this playlist"
         }
     }
 
     var body: some View {
         IconButton(symbol: player.repeatMode == .song ? "repeat.1" : "repeat", active: player.repeatMode != .off) {
-            player.repeatMode = player.repeatMode.next
+            player.nextRepeatMode()
         }
         .overlay(alignment: .bottomTrailing) {
-            if player.repeatMode == .album || player.repeatMode == .artist {
+            if player.repeatMode != .off && player.repeatMode != .song {
                 badge
                     .padding(1.5)
                     .background(Circle().fill(.bar))

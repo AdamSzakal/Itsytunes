@@ -8,6 +8,7 @@ struct ItsytunesApp: App {
     @State private var ticker: MenuBarTicker
     @State private var downloader = Downloader()
     @State private var bandcampSync = BandcampSync()
+    @State private var playlists = PlaylistStore()
 
     init() {
         // Needed when run as a bare executable (`swift run`) instead of the .app bundle.
@@ -25,12 +26,17 @@ struct ItsytunesApp: App {
                 .environment(player)
                 .environment(downloader)
                 .environment(bandcampSync)
+                .environment(playlists)
                 .modifier(MenuBarTicker.WindowOpener(ticker: ticker))
                 .frame(minWidth: 760, minHeight: 420)
         }
         .defaultSize(width: 1100, height: 700)
         .commands {
             CommandGroup(after: .newItem) {
+                Button("New Playlist from Selection…") { NotificationCenter.default.post(name: .newPlaylistFromSelection, object: nil) }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .disabled(library.folder == nil)
+                Divider()
                 Button("Choose Folder…") { library.chooseFolder() }.keyboardShortcut("o")
                 Button("Rescan Folder") { library.rescan() }.keyboardShortcut("r")
                 Button("Sync Bandcamp") { library.folder.map(bandcampSync.sync) }
